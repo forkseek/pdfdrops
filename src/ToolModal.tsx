@@ -8,6 +8,13 @@ interface SelectedFile {
   size: number;
   type: string;
   file: File;
+  previewUrl?: string;
+}
+
+interface ProcessedResult {
+  blob: Blob;
+  name: string;
+  previewUrl?: string;
 }
 
 export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () => void }) {
@@ -27,6 +34,7 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
   const [reorderPages, setReorderPages] = useState<number[]>([]);
   const [dewaterMode, setDewaterMode] = useState<"auto" | "manual">("auto");
   const [manualDewaterFile, setManualDewaterFile] = useState<SelectedFile | null>(null);
+  const [processedResults, setProcessedResults] = useState<ProcessedResult[]>([]);
 
   useEffect(() => {
     if (tool) {
@@ -48,6 +56,7 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       setReorderPages([]);
       setDewaterMode("auto");
       setManualDewaterFile(null);
+      setProcessedResults([]);
     }
     return () => { document.body.style.overflow = ""; };
   }, [tool]);
@@ -73,12 +82,36 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       return;
     }
     const entry: SelectedFile = { name: file.name, size: file.size, type: file.type, file };
+    // 生成预览缩略图
+    if (file.type.startsWith("image/")) {
+      entry.previewUrl = URL.createObjectURL(file);
+    } else if (file.type === "application/pdf") {
+      generatePdfPreview(file).then((url) => { entry.previewUrl = url; setFiles((prev) => [...prev]); });
+    }
     if (acceptConfig.multiple) {
       setFiles((prev) => prev.some((f) => f.name === file.name && f.size === file.size) ? prev : [...prev, entry]);
     } else {
       setFiles([entry]);
     }
   }, [acceptConfig]);
+
+  // 生成 PDF 首页预览
+  const generatePdfPreview = async (file: File): Promise<string> => {
+    try {
+      const buf = await file.arrayBuffer();
+      const pdf = await (await import("pdfjs-dist")).getDocument({ data: new Uint8Array(buf) }).promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 0.4 });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext("2d")!;
+      await page.render({ canvasContext: ctx, canvas, viewport }).promise;
+      return canvas.toDataURL("image/jpeg", 0.6);
+    } catch {
+      return "";
+    }
+  };
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) Array.from(e.target.files).forEach(addFile);
@@ -105,10 +138,12 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     setStatus("processing");
     setStatusMsg("正在加载处理引擎...");
     setError(null);
+    setProcessedResults([]);
 
     try {
       // 按需加载 PDF 处理库（动态 import，不阻塞首屏）
       const pdf = await import("./utils/pdfProcessor");
+      pdf.clearResults();
       const fileObjs = files.map((f) => f.file);
 
       setStatusMsg("处理中，请稍候...");
@@ -190,11 +225,43 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       }
 
       setStatus("done");
-      setStatusMsg("处理完成！文件已开始下载");
-      setTimeout(() => { setStatus("idle"); setFiles([]); }, 3000);
+      setStatusMsg("处理完成！");
+      // 收集处理结果，生成预览
+      const rawResults = pdf.getResults();
+      const resultsWithPreview: ProcessedResult[] = await Promise.all(
+        rawResults.map(async (r) => {
+          let previewUrl: string | undefined;
+          if (r.blob.type === "application/pdf" || r.name.endsWith(".pdf")) {
+            previewUrl = await generateBlobPreview(r.blob);
+          } else if (r.blob.type.startsWith("image/")) {
+            previewUrl = URL.createObjectURL(r.blob);
+          }
+          return { blob: r.blob, name: r.name, previewUrl };
+        })
+      );
+      setProcessedResults(resultsWithPreview);
+      setTimeout(() => { setStatus("idle"); }, 10000);
     } catch (err: any) {
       setStatus("error");
       setError(err.message || "处理失败，请重试");
+    }
+  };
+
+  // 生成 Blob 预览（PDF 首页）
+  const generateBlobPreview = async (blob: Blob): Promise<string> => {
+    try {
+      const buf = await blob.arrayBuffer();
+      const pdf = await (await import("pdfjs-dist")).getDocument({ data: new Uint8Array(buf) }).promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 0.4 });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext("2d")!;
+      await page.render({ canvasContext: ctx, canvas, viewport }).promise;
+      return canvas.toDataURL("image/jpeg", 0.6);
+    } catch {
+      return "";
     }
   };
 
@@ -236,12 +303,22 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     setManualDewaterFile(null);
     setStatus("processing");
     setStatusMsg("正在去除选中区域水印...");
+    setProcessedResults([]);
     try {
       const pdf = await import("./utils/pdfProcessor");
+      pdf.clearResults();
       await pdf.dewaterImageManual(manualDewaterFile.file, maskData);
       setStatus("done");
-      setStatusMsg("处理完成！文件已开始下载");
-      setTimeout(() => { setStatus("idle"); setFiles([]); }, 3000);
+      setStatusMsg("处理完成！");
+      const rawResults = pdf.getResults();
+      const resultsWithPreview: ProcessedResult[] = await Promise.all(
+        rawResults.map(async (r) => {
+          const previewUrl = r.blob.type.startsWith("image/") ? URL.createObjectURL(r.blob) : undefined;
+          return { blob: r.blob, name: r.name, previewUrl };
+        })
+      );
+      setProcessedResults(resultsWithPreview);
+      setTimeout(() => { setStatus("idle"); }, 10000);
     } catch (err: any) {
       setStatus("error");
       setError(err.message || "处理失败，请重试");
@@ -438,8 +515,10 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
             <p className="font-sans text-xs font-medium text-[#9090aa]">已选择 {files.length} 个文件</p>
             {files.map((file, index) => (
               <div key={index} className="flex items-center gap-3 rounded-lg border border-[#24243a] bg-[#1a1a24] p-3 animate-fade-in">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" style={{ background: tool.color + "15", color: tool.color }}>
-                  {file.type === "application/pdf" ? (
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg" style={{ background: tool.color + "15", color: tool.color }}>
+                  {file.previewUrl ? (
+                    <img src={file.previewUrl} alt="" className="h-full w-full object-cover" />
+                  ) : file.type === "application/pdf" ? (
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>
                   ) : (
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></svg>
@@ -451,6 +530,42 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
                 </div>
                 <button onClick={() => removeFile(index)} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#6b6b8a] transition-colors hover:bg-[#24243a] hover:text-red-400">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 处理结果 */}
+        {processedResults.length > 0 && (
+          <div className="mt-4 space-y-2">
+            <p className="font-sans text-xs font-medium text-green-400">处理完成 {processedResults.length} 个文件</p>
+            {processedResults.map((result, index) => (
+              <div key={index} className="flex items-center gap-3 rounded-lg border border-green-500/20 bg-[#0f1a14] p-3 animate-fade-in">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[#1a2a1e]">
+                  {result.previewUrl ? (
+                    <img src={result.previewUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>
+                  )}
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <p className="truncate font-sans text-sm text-white">{result.name}</p>
+                  <p className="font-sans text-xs text-[#6b6b8a]">{formatFileSize(result.blob.size)}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    const url = URL.createObjectURL(result.blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = result.name;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-green-500/20 text-green-400 transition-colors hover:bg-green-500/30 active:scale-95"
+                  title="保存到本地"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                 </button>
               </div>
             ))}

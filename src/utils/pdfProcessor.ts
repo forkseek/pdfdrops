@@ -9,9 +9,21 @@ async function filesToBuffers(files: File[]): Promise<Uint8Array[]> {
   return Promise.all(files.map((f) => f.arrayBuffer().then((b) => new Uint8Array(b))));
 }
 
+// ── 结果收集（供 UI 展示处理后的文件预览） ──
+const results: { blob: Blob; name: string }[] = [];
+
+export function getResults(): { blob: Blob; name: string }[] {
+  return [...results];
+}
+
+export function clearResults(): void {
+  results.length = 0;
+}
+
 // ── 下载
 function downloadBuffer(buffer: Uint8Array, filename: string) {
   const blob = new Blob([buffer as BlobPart], { type: "application/pdf" });
+  results.push({ blob, name: filename });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -21,6 +33,7 @@ function downloadBuffer(buffer: Uint8Array, filename: string) {
 }
 
 function downloadBlob(blob: Blob, filename: string) {
+  results.push({ blob, name: filename });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
