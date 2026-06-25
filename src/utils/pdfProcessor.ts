@@ -227,19 +227,144 @@ export async function pdfToImage(file: File): Promise<void> {
 }
 
 // ══════════════════════════════════════
-// PDF 转 Word（提示：仅提取文本）
+// PDF 转 Word（生成真正的 .docx 文件）
 // ══════════════════════════════════════
 export async function pdfToWord(file: File): Promise<void> {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-  let text = "";
+  const pages: { paras: string[]; width: number; height: number }[] = [];
+
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    text += content.items.map((item: any) => item.str).join(" ") + "\n\n";
+    const viewport = page.getViewport({ scale: 1 });
+    // 按 y 坐标分组（同行文字合并为一个段落）
+    const items = content.items as any[];
+    const lines: Map<number, string> = new Map();
+    for (const item of items) {
+      if (!item.str?.trim()) continue;
+      const y = Math.round(item.transform[5] / 2) * 2; // 按 y 坐标分组
+      const existing = lines.get(y) || "";
+      lines.set(y, existing + item.str);
+    }
+    const sorted = [...lines.entries()]
+      .sort((a, b) => b[0] - a[0]) // y 从大到小（从上到下）
+      .map((e) => e[1]);
+    pages.push({ paras: sorted, width: viewport.width, height: viewport.height });
   }
-  const blob = new Blob([text], { type: "text/plain" });
-  downloadBlob(blob, file.name.replace(/\.pdf$/i, "_text.txt"));
+
+  const docx = buildDocx(pages);
+  downloadBlob(docx, file.name.replace(/\.pdf$/i, ".docx"));
+}
+
+// ── DOCX 生成器（纯前端，无需依赖） ──
+function buildDocx(pages: { paras: string[] }[]): Blob {
+  const docXml = buildDocumentXml(pages);
+  const files: { name: string; data: Uint8Array }[] = [
+    { name: "[Content_Types].xml", data: new TextEncoder().encode(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`) },
+    { name: "_rels/.rels", data: new TextEncoder().encode(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`) },
+    { name: "word/_rels/document.xml.rels", data: new TextEncoder().encode(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`) },
+    { name: "word/document.xml", data: new TextEncoder().encode(docXml) },
+  ];
+  return buildZip(files);
+}
+
+function buildDocumentXml(pages: { paras: string[] }[]): string {
+  const escapeXml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  let body = "";
+  for (const page of pages) {
+    for (const para of page.paras) {
+      if (!para.trim()) continue;
+      body += `<w:p><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">${escapeXml(para)}</w:t></w:r></w:p>`;
+    }
+    body += `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`;
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`;
+}
+
+// ── 最小 ZIP 生成器 ──
+function buildZip(files: { name: string; data: Uint8Array }[]): Blob {
+  const chunks: Uint8Array[] = [];
+  const cdEntries: { header: Uint8Array; offset: number }[] = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = new TextEncoder().encode(file.name);
+    const crc = crc32(file.data);
+    const size = file.data.length;
+
+    // Local file header
+    const lh = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(lh.buffer);
+    lv.setUint32(0, 0x04034b50, true); // signature
+    lv.setUint16(4, 20, true);          // version
+    lv.setUint16(6, 0x0800, true);      // flags (UTF-8)
+    lv.setUint16(8, 0, true);           // compression: store
+    lv.setUint16(10, 0, true);          // mod time
+    lv.setUint16(12, 0, true);          // mod date
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, size, true);
+    lv.setUint32(22, size, true);
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true);          // extra field length
+    lh.set(nameBytes, 30);
+
+    cdEntries.push({ header: lh, offset });
+    chunks.push(lh, file.data);
+    offset += lh.length + size;
+  }
+
+  // Central directory
+  let cdSize = 0;
+  for (const entry of cdEntries) {
+    const lh = entry.header;
+    const dv = new DataView(lh.buffer);
+    dv.setUint32(0, 0x02014b50, true); // central dir signature
+    dv.setUint16(4, 20, true);          // version made by
+    dv.setUint16(6, 20, true);          // version needed
+    dv.setUint32(42, entry.offset, true);
+    chunks.push(lh);
+    cdSize += lh.length;
+  }
+
+  // End of central directory
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, cdEntries.length, true);
+  ev.setUint16(10, cdEntries.length, true);
+  ev.setUint32(12, cdSize, true);
+  ev.setUint32(16, offset, true);
+  ev.setUint16(20, 0, true);
+  chunks.push(eocd);
+
+  // 合并
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const result = new Uint8Array(total);
+  let pos = 0;
+  for (const c of chunks) { result.set(c, pos); pos += c.length; }
+  return new Blob([result], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+}
+
+// ── CRC32 ──
+const CRC_TABLE: Uint32Array = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+})();
+
+function crc32(data: Uint8Array): number {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
 // ══════════════════════════════════════
@@ -315,66 +440,103 @@ export async function reorderPDF(file: File, newOrder: number[]): Promise<void> 
 }
 
 // ══════════════════════════════════════
-// 去水印（图片水印检测与移除）
+// 去水印 —— 智能去水印（全图扫描，检测半透明文字/logo）
 // ══════════════════════════════════════
-export async function dewaterImage(files: File[]): Promise<void> {
+export async function dewaterImageAuto(files: File[]): Promise<void> {
   for (const file of files) {
-    const buf = await file.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    const img = new Image();
-    img.src = URL.createObjectURL(new Blob([bytes]));
-    await new Promise<void>((res) => { img.onload = () => res(); });
-
-    const canvas = document.createElement("canvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(img.src);
-
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { canvas, ctx } = await loadImageToCanvas(file);
+    const w = canvas.width, h = canvas.height;
+    const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // 简单水印检测：找出大面积半透明白色区域（常见水印特征）并去除
-    const w = canvas.width;
-    const h = canvas.height;
-    // 扫描右下角区域（常见水印位置）
-    const rw = Math.floor(w * 0.4);
-    const rh = Math.floor(h * 0.3);
-    const startX = w - rw;
-    const startY = h - rh;
-
-    for (let y = startY; y < h; y++) {
-      for (let x = startX; x < w; x++) {
+    // 智能扫描全图：检测半透明区域（alpha 在 30~200 之间，亮度偏高）
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
         const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-        // 检测接近白色的半透明区域
-        if (a > 50 && a < 220 && r > 180 && g > 180 && b > 180) {
+        if (a > 30 && a < 200) {
           const brightness = (r + g + b) / 3;
-          if (brightness > 200) {
-            // 向四周取样并混合
-            const nx = Math.min(x + 1, w - 1);
-            const ny = Math.min(y + 1, h - 1);
-            const ni = (ny * w + nx) * 4;
-            data[i] = data[ni];
-            data[i + 1] = data[ni + 1];
-            data[i + 2] = data[ni + 2];
-            data[i + 3] = data[ni + 3];
+          if (brightness > 160) {
+            // 用周围像素填充
+            const sx = Math.max(0, x - 2), sy = Math.max(0, y - 2);
+            const si = (sy * w + sx) * 4;
+            data[i] = data[si];
+            data[i + 1] = data[si + 1];
+            data[i + 2] = data[si + 2];
+            data[i + 3] = 255;
           }
         }
       }
     }
 
     ctx.putImageData(imageData, 0, 0);
-    canvas.toBlob((blob) => {
-      if (blob) {
-        const base = file.name.replace(/\.[^.]+$/, "");
-        const ext = file.type === "image/png" ? "png" : "jpg";
-        downloadBlob(blob, `${base}_dewatered.${ext}`);
-      }
-    }, file.type);
-    await new Promise((r) => setTimeout(r, 300));
+    await saveCanvasAsFile(canvas, file, "_dewatered");
+    await new Promise((r) => setTimeout(r, 200));
   }
+}
+
+// ══════════════════════════════════════
+// 去水印 —— 画笔选区去水印（根据 mask 数据移除指定区域）
+// ══════════════════════════════════════
+export async function dewaterImageManual(file: File, maskData: ImageData): Promise<void> {
+  const { canvas, ctx } = await loadImageToCanvas(file);
+  const w = canvas.width, h = canvas.height;
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+  const mask = maskData.data;
+
+  // 只处理 mask 标记的区域（红色通道 > 128 表示选中）
+  for (let y = 0; y < Math.min(h, maskData.height); y++) {
+    for (let x = 0; x < Math.min(w, maskData.width); x++) {
+      const mi = (y * maskData.width + x) * 4;
+      if (mask[mi] > 128) {
+        const i = (y * w + x) * 4;
+        // 用周围像素填充
+        const sx = Math.max(0, x - 2), sy = Math.max(0, y - 2);
+        const si = (sy * w + sx) * 4;
+        data[i] = data[si];
+        data[i + 1] = data[si + 1];
+        data[i + 2] = data[si + 2];
+        data[i + 3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  await saveCanvasAsFile(canvas, file, "_dewatered");
+}
+
+// 辅助：加载图片到 canvas
+async function loadImageToCanvas(file: File): Promise<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const img = new Image();
+  img.src = URL.createObjectURL(new Blob([bytes]));
+  await new Promise<void>((res) => { img.onload = () => res(); });
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  URL.revokeObjectURL(img.src);
+  return { canvas, ctx };
+}
+
+// 辅助：保存 canvas 为文件
+async function saveCanvasAsFile(canvas: HTMLCanvasElement, file: File, suffix: string): Promise<void> {
+  const base = file.name.replace(/\.[^.]+$/, "");
+  const ext = file.type === "image/png" ? "png" : "jpg";
+  const mime = file.type || "image/png";
+  canvas.toBlob((blob) => {
+    if (blob) downloadBlob(blob, `${base}${suffix}.${ext}`);
+  }, mime);
+}
+
+// ══════════════════════════════════════
+// 去水印（兼容旧接口 —— 智能去水印）
+// ══════════════════════════════════════
+export async function dewaterImage(files: File[]): Promise<void> {
+  return dewaterImageAuto(files);
 }
 
 // ══════════════════════════════════════

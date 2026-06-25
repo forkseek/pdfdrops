@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { icons } from "./icons";
 import { getAcceptTypes, formatFileSize, type Tool } from "./tools";
+import { DewaterCanvas } from "./DewaterCanvas";
 
 interface SelectedFile {
   name: string;
@@ -24,6 +25,8 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
   const [compareResult, setCompareResult] = useState<string | null>(null);
   const [reorderMode, setReorderMode] = useState(false);
   const [reorderPages, setReorderPages] = useState<number[]>([]);
+  const [dewaterMode, setDewaterMode] = useState<"auto" | "manual">("auto");
+  const [manualDewaterFile, setManualDewaterFile] = useState<SelectedFile | null>(null);
 
   useEffect(() => {
     if (tool) {
@@ -43,6 +46,8 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       setCompareResult(null);
       setReorderMode(false);
       setReorderPages([]);
+      setDewaterMode("auto");
+      setManualDewaterFile(null);
     }
     return () => { document.body.style.overflow = ""; };
   }, [tool]);
@@ -146,7 +151,14 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           for (const f of fileObjs) await pdf.addWatermark(f, watermarkText);
           break;
         case "去水印":
-          for (const f of fileObjs) await pdf.dewaterImage([f]);
+          if (dewaterMode === "auto") {
+            for (const f of fileObjs) await pdf.dewaterImageAuto([f]);
+          } else {
+            setStatus("idle");
+            setStatusMsg("");
+            if (files[0]) setManualDewaterFile(files[0]);
+            return;
+          }
           break;
         case "图片转 PDF":
           await pdf.imageToPDF(fileObjs);
@@ -219,6 +231,23 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     });
   };
 
+  const handleManualDewater = async (maskData: ImageData) => {
+    if (!manualDewaterFile) return;
+    setManualDewaterFile(null);
+    setStatus("processing");
+    setStatusMsg("正在去除选中区域水印...");
+    try {
+      const pdf = await import("./utils/pdfProcessor");
+      await pdf.dewaterImageManual(manualDewaterFile.file, maskData);
+      setStatus("done");
+      setStatusMsg("处理完成！文件已开始下载");
+      setTimeout(() => { setStatus("idle"); setFiles([]); }, 3000);
+    } catch (err: any) {
+      setStatus("error");
+      setError(err.message || "处理失败，请重试");
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
@@ -249,14 +278,24 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           </label>
 
           {isImageTool && (
-            <label className="relative flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95">
-              <input type="file" accept="image/*" multiple={acceptConfig.multiple} capture="environment" onChange={onFileChange}
-                style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0.001, cursor: "pointer", fontSize: "16px" }} />
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
-                <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" />
-              </svg>
-              <span className="font-sans text-sm text-[#e2e8f0]">拍照上传</span>
-            </label>
+            <div className="flex gap-2">
+              <label className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95">
+                <input type="file" accept="image/*" multiple={acceptConfig.multiple} onChange={onFileChange}
+                  style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0.001, cursor: "pointer", fontSize: "16px" }} />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
+                  <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" />
+                </svg>
+                <span className="font-sans text-sm text-[#e2e8f0]">相册</span>
+              </label>
+              <label className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95">
+                <input type="file" accept="image/*" multiple={acceptConfig.multiple} capture="environment" onChange={onFileChange}
+                  style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0.001, cursor: "pointer", fontSize: "16px" }} />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
+                  <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" />
+                </svg>
+                <span className="font-sans text-sm text-[#e2e8f0]">拍照</span>
+              </label>
+            </div>
           )}
         </div>
 
@@ -348,8 +387,23 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           </div>
         )}
         {needsDeWater && (
-          <div className="mt-4 rounded-lg border border-[#24243a] bg-[#1a1a24] p-3">
-            <p className="font-sans text-xs text-[#6b6b8a]">自动检测并去除图片右下角区域的半透明水印。处理后文件将直接下载。</p>
+          <div className="mt-4 space-y-3">
+            <div className="flex gap-2">
+              <button onClick={() => setDewaterMode("auto")}
+                className={`flex-1 rounded-lg py-2.5 font-sans text-sm transition-all ${dewaterMode === "auto" ? "bg-red-500 text-white" : "border border-[#32324f] bg-[#1a1a24] text-[#9090aa] hover:border-[#4a4a6a]"}`}>
+                智能去水印
+              </button>
+              <button onClick={() => setDewaterMode("manual")}
+                className={`flex-1 rounded-lg py-2.5 font-sans text-sm transition-all ${dewaterMode === "manual" ? "bg-red-500 text-white" : "border border-[#32324f] bg-[#1a1a24] text-[#9090aa] hover:border-[#4a4a6a]"}`}>
+                画笔选区
+              </button>
+            </div>
+            {dewaterMode === "auto" && (
+              <p className="font-sans text-xs text-[#6b6b8a]">智能扫描全图，自动检测并去除半透明水印</p>
+            )}
+            {dewaterMode === "manual" && (
+              <p className="font-sans text-xs text-[#6b6b8a]">上传图片后可用画笔涂抹水印区域，仅去除选中部分</p>
+            )}
           </div>
         )}
 
@@ -413,6 +467,14 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
         </div>
         <p className="mt-3 text-center font-sans text-xs text-[#4a4a6a]">文件仅在浏览器本地处理,不会上传到服务器</p>
       </div>
+
+      {manualDewaterFile && (
+        <DewaterCanvas
+          file={manualDewaterFile.file}
+          onProcess={handleManualDewater}
+          onCancel={() => setManualDewaterFile(null)}
+        />
+      )}
     </div>
   );
 }
