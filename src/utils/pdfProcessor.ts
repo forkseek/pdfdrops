@@ -11,7 +11,7 @@ async function filesToBuffers(files: File[]): Promise<Uint8Array[]> {
 
 // ── 下载
 function downloadBuffer(buffer: Uint8Array, filename: string) {
-  const blob = new Blob([buffer], { type: "application/pdf" });
+  const blob = new Blob([buffer as BlobPart], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -103,6 +103,8 @@ export async function encryptPDF(file: File, password: string): Promise<void> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   const pdf = await PDFDocument.load(bytes);
+  // pdf-lib 1.17 类型定义缺 encrypt，但运行时存在
+  // @ts-expect-error - encrypt exists at runtime but missing in types
   pdf.encrypt({ userPassword: password, ownerPassword: password });
   const out = await pdf.save();
   downloadBuffer(out, file.name.replace(/\.pdf$/i, "_encrypted.pdf"));
@@ -214,7 +216,7 @@ export async function pdfToImage(file: File): Promise<void> {
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     const ctx = canvas.getContext("2d")!;
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvasContext: ctx, canvas, viewport }).promise;
     canvas.toBlob((blob) => {
       if (blob) {
         downloadBlob(blob, `${file.name.replace(/\.pdf$/i, "")}_page_${i}.png`);
@@ -249,7 +251,7 @@ export async function signPDF(file: File, signatureText: string): Promise<void> 
   const pdf = await PDFDocument.load(bytes);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   pdf.getPages().forEach((page) => {
-    const { width, height } = page.getSize();
+    const { width } = page.getSize();
     page.drawText(signatureText, {
       x: width - 200,
       y: 30,
