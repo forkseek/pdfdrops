@@ -453,36 +453,163 @@ export async function reorderPDF(file: File, newOrder: number[]): Promise<void> 
 }
 
 // ══════════════════════════════════════
-// 去水印 —— 智能去水印（全图扫描，检测半透明文字/logo）
+// 去水印 —— 智能去水印（多策略检测 + 内容感知填充）
 // ══════════════════════════════════════
 export async function dewaterImageAuto(files: File[]): Promise<void> {
   for (const file of files) {
     const { canvas, ctx } = await loadImageToCanvas(file);
     const w = canvas.width, h = canvas.height;
+    if (w < 10 || h < 10) { await saveCanvasAsFile(canvas, file, "_dewatered"); continue; }
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // 智能扫描全图：检测半透明区域（alpha 在 30~200 之间，亮度偏高）
+    // 步骤1: 构建灰度图用于分析
+    const gray = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const j = i * 4;
+      gray[i] = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+    }
+
+    const WINDOW = 7;
+    const halfW = Math.floor(WINDOW / 2);
+
+    // 预计算局部均值和方差
+    const localMean = new Float32Array(w * h);
+    const localVar = new Float32Array(w * h);
+
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-        if (a > 30 && a < 200) {
-          const brightness = (r + g + b) / 3;
-          if (brightness > 160) {
-            // 用周围像素填充
-            const sx = Math.max(0, x - 2), sy = Math.max(0, y - 2);
-            const si = (sy * w + sx) * 4;
-            data[i] = data[si];
-            data[i + 1] = data[si + 1];
-            data[i + 2] = data[si + 2];
-            data[i + 3] = 255;
+        let sum = 0, sumSq = 0, cnt = 0;
+        for (let dy = -halfW; dy <= halfW; dy++) {
+          for (let dx = -halfW; dx <= halfW; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+              const v = gray[ny * w + nx];
+              sum += v;
+              sumSq += v * v;
+              cnt++;
+            }
+          }
+        }
+        const m = sum / cnt;
+        localMean[y * w + x] = m;
+        localVar[y * w + x] = (sumSq / cnt) - m * m;
+      }
+    }
+
+    // 步骤2: 标记水印候选像素
+    const mask = new Uint8Array(w * h);
+    const globalMean = localMean.reduce((a, b) => a + b, 0) / (w * h);
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        const i = idx * 4;
+        const a = data[i + 3];
+        const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+        const lm = localMean[idx];
+        const lv = localVar[idx];
+
+        let isWatermark = false;
+
+        // 策略A: PNG半透明检测 (alpha 在 30~220 之间且亮度较高)
+        if (a > 30 && a < 220 && brightness > 140) {
+          isWatermark = true;
+        }
+
+        // 策略B: JPEG水印检测 - 像素比周围亮且局部方差低（水印区域通常平滑）
+        if (!isWatermark && brightness > lm + 15 && lv < 400 && brightness > 140) {
+          isWatermark = true;
+        }
+
+        // 策略C: 检测高亮低对比度区域（文字水印通常出现在这类区域）
+        if (!isWatermark && brightness > 200 && lv < 200 && brightness > lm + 10) {
+          isWatermark = true;
+        }
+
+        // 策略D: 检测均匀的浅色覆盖层（整体亮度 > 全局均值 + 阈值）
+        if (!isWatermark && brightness > globalMean + 30 && lv < 300 && brightness < 245) {
+          isWatermark = true;
+        }
+
+        if (isWatermark) {
+          mask[idx] = 1;
+        }
+      }
+    }
+
+    // 步骤3: 形态学膨胀 - 连接相邻的水印区域
+    const dilated = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (mask[y * w + x]) {
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = x + dx, ny = y + dy;
+              if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                dilated[ny * w + nx] = 1;
+              }
+            }
           }
         }
       }
     }
 
-    ctx.putImageData(imageData, 0, 0);
+    // 步骤4: 内容感知填充 - 用周围非水印像素的中值填充
+    const result = new Uint8ClampedArray(data);
+    const FILL_R = 5; // 填充搜索半径
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!dilated[y * w + x]) continue;
+        const i = (y * w + x) * 4;
+
+        // 收集周围非水印像素
+        const neighbors: [number, number, number][] = [];
+        for (let dy = -FILL_R; dy <= FILL_R; dy++) {
+          for (let dx = -FILL_R; dx <= FILL_R; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h && !dilated[ny * w + nx]) {
+              const ni = (ny * w + nx) * 4;
+              neighbors.push([data[ni], data[ni + 1], data[ni + 2]]);
+            }
+          }
+        }
+
+        if (neighbors.length > 0) {
+          // 按亮度排序取中值
+          neighbors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
+          const m = neighbors[Math.floor(neighbors.length / 2)];
+          result[i] = m[0];
+          result[i + 1] = m[1];
+          result[i + 2] = m[2];
+          result[i + 3] = 255;
+        } else {
+          // 扩大搜索范围
+          for (let dy = -FILL_R * 2; dy <= FILL_R * 2; dy++) {
+            for (let dx = -FILL_R * 2; dx <= FILL_R * 2; dx++) {
+              const nx = x + dx, ny = y + dy;
+              if (nx >= 0 && nx < w && ny >= 0 && ny < h && !dilated[ny * w + nx]) {
+                const ni = (ny * w + nx) * 4;
+                neighbors.push([data[ni], data[ni + 1], data[ni + 2]]);
+              }
+            }
+          }
+          if (neighbors.length > 0) {
+            neighbors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
+            const m = neighbors[Math.floor(neighbors.length / 2)];
+            result[i] = m[0];
+            result[i + 1] = m[1];
+            result[i + 2] = m[2];
+            result[i + 3] = 255;
+          }
+        }
+      }
+    }
+
+    const outData = new ImageData(result, w, h);
+    ctx.putImageData(outData, 0, 0);
     await saveCanvasAsFile(canvas, file, "_dewatered");
     await new Promise((r) => setTimeout(r, 200));
   }

@@ -33,7 +33,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
   const [reorderMode, setReorderMode] = useState(false);
   const [reorderPages, setReorderPages] = useState<number[]>([]);
   const [dewaterMode, setDewaterMode] = useState<"auto" | "manual">("auto");
-  const [manualDewaterFile, setManualDewaterFile] = useState<SelectedFile | null>(null);
   const [processedResults, setProcessedResults] = useState<ProcessedResult[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -59,7 +58,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       setReorderMode(false);
       setReorderPages([]);
       setDewaterMode("auto");
-      setManualDewaterFile(null);
       setProcessedResults([]);
     }
     return () => { document.body.style.overflow = ""; };
@@ -86,7 +84,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       return;
     }
     const entry: SelectedFile = { name: file.name, size: file.size, type: file.type, file };
-    // 生成预览缩略图
     if (file.type.startsWith("image/")) {
       entry.previewUrl = URL.createObjectURL(file);
     } else if (file.type === "application/pdf") {
@@ -99,7 +96,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     }
   }, [acceptConfig]);
 
-  // 生成 PDF 首页预览
   const generatePdfPreview = async (file: File): Promise<string> => {
     try {
       const buf = await file.arrayBuffer();
@@ -124,7 +120,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
 
   const removeFile = (i: number) => setFiles((prev) => prev.filter((_, idx) => idx !== i));
 
-  // 解析页码输入: "1,3,5-7" → [1,3,5,6,7]
   const parsePages = (input: string): number[] =>
     input.split(",").flatMap((s) => {
       const t = s.trim();
@@ -136,7 +131,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
       return [parseInt(t)];
     }).filter((n) => !isNaN(n) && n > 0);
 
-  // 动态加载处理模块
   const handleProcess = async () => {
     if (files.length === 0) return;
     setStatus("processing");
@@ -145,7 +139,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     setProcessedResults([]);
 
     try {
-      // 按需加载 PDF 处理库（动态 import，不阻塞首屏）
       const pdf = await import("./utils/pdfProcessor");
       pdf.clearResults();
       const fileObjs = files.map((f) => f.file);
@@ -165,9 +158,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           await pdf.extractPages(fileObjs[0], nums);
           break;
         }
-        case "压缩 PDF":
-          for (const f of fileObjs) await pdf.compressPDF(f);
-          break;
         case "加密 PDF":
           if (!password) throw new Error("请输入密码");
           for (const f of fileObjs) await pdf.encryptPDF(f, password);
@@ -190,23 +180,13 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           for (const f of fileObjs) await pdf.addWatermark(f, watermarkText);
           break;
         case "去水印":
-          if (dewaterMode === "auto") {
-            for (const f of fileObjs) await pdf.dewaterImageAuto([f]);
-          } else {
-            setStatus("idle");
-            setStatusMsg("");
-            if (files[0]) setManualDewaterFile(files[0]);
-            return;
-          }
+          for (const f of fileObjs) await pdf.dewaterImageAuto([f]);
           break;
         case "图片转 PDF":
           await pdf.imageToPDF(fileObjs);
           break;
         case "PDF 转图片":
           await pdf.pdfToImage(fileObjs[0]);
-          break;
-        case "PDF 转 Word":
-          await pdf.pdfToWord(fileObjs[0]);
           break;
         case "签名 PDF":
           if (!signatureText.trim()) throw new Error("请输入签名文字");
@@ -230,7 +210,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
 
       setStatus("done");
       setStatusMsg("处理完成！");
-      // 收集处理结果，生成预览
       const rawResults = pdf.getResults();
       const resultsWithPreview: ProcessedResult[] = await Promise.all(
         rawResults.map(async (r) => {
@@ -251,7 +230,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     }
   };
 
-  // 生成 Blob 预览（PDF 首页）
   const generateBlobPreview = async (blob: Blob): Promise<string> => {
     try {
       const buf = await blob.arrayBuffer();
@@ -269,6 +247,32 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     }
   };
 
+  const handleManualDewater = async (maskData: ImageData) => {
+    if (files.length === 0) return;
+    setStatus("processing");
+    setStatusMsg("正在去除选中区域水印...");
+    setProcessedResults([]);
+    try {
+      const pdf = await import("./utils/pdfProcessor");
+      pdf.clearResults();
+      await pdf.dewaterImageManual(files[0].file, maskData);
+      setStatus("done");
+      setStatusMsg("处理完成！");
+      const rawResults = pdf.getResults();
+      const resultsWithPreview: ProcessedResult[] = await Promise.all(
+        rawResults.map(async (r) => {
+          const previewUrl = r.blob.type.startsWith("image/") ? URL.createObjectURL(r.blob) : undefined;
+          return { blob: r.blob, name: r.name, previewUrl };
+        })
+      );
+      setProcessedResults(resultsWithPreview);
+      setTimeout(() => { setStatus("idle"); }, 10000);
+    } catch (err: any) {
+      setStatus("error");
+      setError(err.message || "处理失败，请重试");
+    }
+  };
+
   if (!tool) return null;
 
   const isImageTool = acceptConfig.accept.includes("image");
@@ -281,6 +285,7 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
   const needsCompare = tool.name === "PDF 对比";
   const needsReorder = tool.name === "页面排序";
   const needsDeWater = tool.name === "去水印";
+  const showManualDewater = needsDeWater && dewaterMode === "manual" && files.length > 0 && status !== "processing" && status !== "done";
 
   const enterReorderMode = async () => {
     if (files.length === 1) {
@@ -302,33 +307,6 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     });
   };
 
-  const handleManualDewater = async (maskData: ImageData) => {
-    if (!manualDewaterFile) return;
-    setManualDewaterFile(null);
-    setStatus("processing");
-    setStatusMsg("正在去除选中区域水印...");
-    setProcessedResults([]);
-    try {
-      const pdf = await import("./utils/pdfProcessor");
-      pdf.clearResults();
-      await pdf.dewaterImageManual(manualDewaterFile.file, maskData);
-      setStatus("done");
-      setStatusMsg("处理完成！");
-      const rawResults = pdf.getResults();
-      const resultsWithPreview: ProcessedResult[] = await Promise.all(
-        rawResults.map(async (r) => {
-          const previewUrl = r.blob.type.startsWith("image/") ? URL.createObjectURL(r.blob) : undefined;
-          return { blob: r.blob, name: r.name, previewUrl };
-        })
-      );
-      setProcessedResults(resultsWithPreview);
-      setTimeout(() => { setStatus("idle"); }, 10000);
-    } catch (err: any) {
-      setStatus("error");
-      setError(err.message || "处理失败，请重试");
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
@@ -346,48 +324,50 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
         <h3 className="font-display text-xl text-white sm:text-2xl">{tool.name}</h3>
         <p className="mt-2 font-sans text-sm text-[#9090aa]">{tool.desc}</p>
 
-        {/* 文件选择器 */}
-        <div className="mt-6 space-y-3">
-          <label
-            htmlFor="file-upload"
-            className="relative flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-[#32324f] bg-[#1a1a24] p-6 text-center transition-all active:border-[#4a4a6a] active:scale-[0.98]"
-          >
-            <input id="file-upload" ref={fileInputRef} type="file" accept={acceptConfig.accept} multiple={acceptConfig.multiple} onChange={onFileChange}
-              className="absolute inset-0 opacity-0 cursor-pointer" />
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6b6b8a" strokeWidth="1.5" className="mb-3">
-              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-            <p className="font-sans text-sm text-[#e2e8f0]">{isMerge ? "点击添加多个文件" : "点击选择文件"}</p>
-            <p className="mt-1 font-sans text-xs text-[#6b6b8a]">{acceptConfig.hint}</p>
-          </label>
+        {/* 文件选择器 (去水印手动模式选文件后隐藏上传区，显示画笔) */}
+        {!showManualDewater && (
+          <div className="mt-6 space-y-3">
+            <label
+              htmlFor="file-upload"
+              className="relative flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-[#32324f] bg-[#1a1a24] p-6 text-center transition-all active:border-[#4a4a6a] active:scale-[0.98]"
+            >
+              <input id="file-upload" ref={fileInputRef} type="file" accept={acceptConfig.accept} multiple={acceptConfig.multiple} onChange={onFileChange}
+                className="absolute inset-0 opacity-0 cursor-pointer" />
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6b6b8a" strokeWidth="1.5" className="mb-3">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <p className="font-sans text-sm text-[#e2e8f0]">{isMerge ? "点击添加多个文件" : "点击选择文件"}</p>
+              <p className="mt-1 font-sans text-xs text-[#6b6b8a]">{acceptConfig.hint}</p>
+            </label>
 
-          {isImageTool && (
-            <div className="flex gap-2">
-              <label
-                htmlFor="gallery-upload"
-                className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95"
-              >
-                <input id="gallery-upload" ref={galleryInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} onChange={onFileChange}
-                  className="absolute inset-0 opacity-0 cursor-pointer" />
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
-                  <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" />
-                </svg>
-                <span className="font-sans text-sm text-[#e2e8f0]">相册</span>
-              </label>
-              <label
-                htmlFor="camera-upload"
-                className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95"
-              >
-                <input id="camera-upload" ref={cameraInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} capture="environment" onChange={onFileChange}
-                  className="absolute inset-0 opacity-0 cursor-pointer" />
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
-                  <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" />
-                </svg>
-                <span className="font-sans text-sm text-[#e2e8f0]">拍照</span>
-              </label>
-            </div>
-          )}
-        </div>
+            {isImageTool && (
+              <div className="flex gap-2">
+                <label
+                  htmlFor="gallery-upload"
+                  className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95"
+                >
+                  <input id="gallery-upload" ref={galleryInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} onChange={onFileChange}
+                    className="absolute inset-0 opacity-0 cursor-pointer" />
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
+                    <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" />
+                  </svg>
+                  <span className="font-sans text-sm text-[#e2e8f0]">相册</span>
+                </label>
+                <label
+                  htmlFor="camera-upload"
+                  className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95"
+                >
+                  <input id="camera-upload" ref={cameraInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} capture="environment" onChange={onFileChange}
+                    className="absolute inset-0 opacity-0 cursor-pointer" />
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
+                    <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" />
+                  </svg>
+                  <span className="font-sans text-sm text-[#e2e8f0]">拍照</span>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 参数输入 */}
         {needsPageInput && (
@@ -489,9 +469,9 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
               </button>
             </div>
             {dewaterMode === "auto" && (
-              <p className="font-sans text-xs text-[#6b6b8a]">智能扫描全图，自动检测并去除半透明水印</p>
+              <p className="font-sans text-xs text-[#6b6b8a]">智能扫描全图，自动检测并去除半透明水印和文字水印</p>
             )}
-            {dewaterMode === "manual" && (
+            {dewaterMode === "manual" && !files.length && (
               <p className="font-sans text-xs text-[#6b6b8a]">上传图片后可用画笔涂抹水印区域，仅去除选中部分</p>
             )}
           </div>
@@ -522,8 +502,38 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           </div>
         )}
 
-        {/* 文件列表 */}
-        {files.length > 0 && (
+        {/* 去水印手动模式：文件列表 + 画笔Canvas */}
+        {showManualDewater && (
+          <div className="mt-4 space-y-2">
+            <p className="font-sans text-xs font-medium text-[#9090aa]">已选择 1 个文件</p>
+            <div className="flex items-center gap-3 rounded-lg border border-[#24243a] bg-[#1a1a24] p-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg" style={{ background: tool.color + "15", color: tool.color }}>
+                {files[0].previewUrl ? (
+                  <img src={files[0].previewUrl} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></svg>
+                )}
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <p className="truncate font-sans text-sm text-white">{files[0].name}</p>
+                <p className="font-sans text-xs text-[#6b6b8a]">{formatFileSize(files[0].size)}</p>
+              </div>
+              <button onClick={() => { removeFile(0); setDewaterMode("auto"); }} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#6b6b8a] transition-colors hover:bg-[#24243a] hover:text-red-400">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+
+            <div className="mt-3">
+              <DewaterCanvas
+                file={files[0].file}
+                onProcess={handleManualDewater}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* 文件列表 (非去水印手动模式) */}
+        {!showManualDewater && files.length > 0 && (
           <div className="mt-4 space-y-2">
             <p className="font-sans text-xs font-medium text-[#9090aa]">已选择 {files.length} 个文件</p>
             {files.map((file, index) => (
@@ -585,24 +595,18 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           </div>
         )}
 
-        {/* 操作按钮 */}
-        <div className="mt-6 flex gap-3">
-          <button onClick={onClose} className="flex-1 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 font-sans text-sm text-[#e2e8f0] transition-all hover:border-[#4a4a6a] active:scale-95">取消</button>
-          <button disabled={files.length === 0 || status === "processing" || (needsCompare && files.length < 2)} onClick={handleProcess}
-            className={`flex-1 rounded-xl py-3 font-sans text-sm font-medium transition-all active:scale-95 ${files.length > 0 && status !== "processing" && !(needsCompare && files.length < 2) ? "bg-red-500 text-white hover:bg-red-600" : "cursor-not-allowed bg-[#24243a] text-[#4a4a6a]"}`}>
-            {status === "processing" ? "处理中..." : "开始处理"}
-          </button>
-        </div>
+        {/* 操作按钮 (去水印手动模式不显示) */}
+        {!showManualDewater && (
+          <div className="mt-6 flex gap-3">
+            <button onClick={onClose} className="flex-1 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 font-sans text-sm text-[#e2e8f0] transition-all hover:border-[#4a4a6a] active:scale-95">取消</button>
+            <button disabled={files.length === 0 || status === "processing" || (needsCompare && files.length < 2)} onClick={handleProcess}
+              className={`flex-1 rounded-xl py-3 font-sans text-sm font-medium transition-all active:scale-95 ${files.length > 0 && status !== "processing" && !(needsCompare && files.length < 2) ? "bg-red-500 text-white hover:bg-red-600" : "cursor-not-allowed bg-[#24243a] text-[#4a4a6a]"}`}>
+              {status === "processing" ? "处理中..." : "开始处理"}
+            </button>
+          </div>
+        )}
         <p className="mt-3 text-center font-sans text-xs text-[#4a4a6a]">文件仅在浏览器本地处理,不会上传到服务器</p>
       </div>
-
-      {manualDewaterFile && (
-        <DewaterCanvas
-          file={manualDewaterFile.file}
-          onProcess={handleManualDewater}
-          onCancel={() => setManualDewaterFile(null)}
-        />
-      )}
     </div>
   );
 }

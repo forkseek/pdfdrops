@@ -22,7 +22,6 @@ export const tools: ToolCategory[] = [
   {
     category: "格式转换",
     items: [
-      { name: "PDF 转 Word", desc: "转为真正的 .docx 文档", icon: "word", color: "#3b82f6" },
       { name: "PDF 转图片", desc: "导出 PNG / JPG", icon: "image", color: "#22c55e" },
       { name: "图片转 PDF", desc: "多图合成一个文件", icon: "photo", color: "#a855f7" },
     ],
@@ -30,7 +29,6 @@ export const tools: ToolCategory[] = [
   {
     category: "压缩与加密",
     items: [
-      { name: "压缩 PDF", desc: "减小文件体积", icon: "compress", color: "#ec4899" },
       { name: "加密 PDF", desc: "设置访问密码", icon: "lock", color: "#f43f5e" },
       { name: "解锁 PDF", desc: "移除密码保护", icon: "unlock", color: "#14b8a6" },
     ],
