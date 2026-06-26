@@ -346,13 +346,16 @@ async function loadImageToCanvas(file: File): Promise<{ canvas: HTMLCanvasElemen
   return { canvas, ctx };
 }
 
-async function saveCanvasAsFile(canvas: HTMLCanvasElement, file: File, suffix: string): Promise<void> {
-  const base = file.name.replace(/\.[^.]+$/, "");
-  const ext = file.type === "image/png" ? "png" : "jpg";
-  const mime = file.type || "image/png";
-  canvas.toBlob((blob) => {
-    if (blob) downloadBlob(blob, `${base}${suffix}.${ext}`);
-  }, mime, 0.95);
+function saveCanvasAsFile(canvas: HTMLCanvasElement, file: File, suffix: string): Promise<void> {
+  return new Promise((resolve) => {
+    const base = file.name.replace(/\.[^.]+$/, "");
+    const ext = file.type === "image/png" ? "png" : "jpg";
+    const mime = file.type || "image/png";
+    canvas.toBlob((blob) => {
+      if (blob) downloadBlob(blob, `${base}${suffix}.${ext}`);
+      resolve();
+    }, mime, 0.95);
+  });
 }
 
 /** 检测水印区域，返回 mask */
