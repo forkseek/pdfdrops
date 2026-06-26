@@ -1,8 +1,8 @@
 import { PDFDocument, rgb, degrees, StandardFonts } from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist";
 
-// 配置 pdfjs worker（CDN）
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// 配置 pdfjs worker（使用本地打包版本，避免 CDN 被墙）
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).href;
 
 // ── 通用: File[] → ArrayBuffer[]
 async function filesToBuffers(files: File[]): Promise<Uint8Array[]> {
