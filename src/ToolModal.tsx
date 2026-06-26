@@ -17,7 +17,7 @@ interface ProcessedResult {
   previewUrl?: string;
 }
 
-export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () => void }) {
+export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClose: () => void; inline?: boolean }) {
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
@@ -307,22 +307,13 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
     });
   };
 
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-      <div
-        className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-[#32324f] bg-[#0f0f14] p-6 shadow-2xl animate-fade-up sm:p-8"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button onClick={onClose} className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-lg text-[#6b6b8a] transition-colors hover:bg-[#1a1a24] hover:text-white">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
-        </button>
-
-        <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl sm:h-16 sm:w-16" style={{ background: tool.color + "20", color: tool.color }}>
-          {icons[tool.icon]}
-        </div>
-        <h3 className="font-display text-xl text-white sm:text-2xl">{tool.name}</h3>
-        <p className="mt-2 font-sans text-sm text-[#9090aa]">{tool.desc}</p>
+  const content = (
+    <>
+      <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl sm:h-16 sm:w-16" style={{ background: tool.color + "20", color: tool.color }}>
+        {icons[tool.icon]}
+      </div>
+      <h3 className="font-display text-xl text-white sm:text-2xl">{tool.name}</h3>
+      <p className="mt-2 font-sans text-sm text-[#9090aa]">{tool.desc}</p>
 
         {/* 文件选择器 (去水印手动模式选文件后隐藏上传区，显示画笔) */}
         {!showManualDewater && (
@@ -606,6 +597,30 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           </div>
         )}
         <p className="mt-3 text-center font-sans text-xs text-[#4a4a6a]">文件仅在浏览器本地处理,不会上传到服务器</p>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <div className="w-full max-w-md mx-auto">
+        <div className="rounded-2xl border border-[#32324f] bg-[#0f0f14] p-6 sm:p-8">
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-[#32324f] bg-[#0f0f14] p-6 shadow-2xl animate-fade-up sm:p-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-lg text-[#6b6b8a] transition-colors hover:bg-[#1a1a24] hover:text-white">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+        {content}
       </div>
     </div>
   );
