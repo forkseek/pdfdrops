@@ -606,71 +606,67 @@ export async function dewaterImageManual(file: File, maskData: ImageData): Promi
   const result = new Uint8ClampedArray(data);
   const total = w * h;
 
-  // 边缘像素队列：水印像素 && 至少有一个非水印邻居
+  // ── 多源 BFS：每个水印像素拷贝最近的非水印像素颜色 ──
+  // sourceIdx[i] = 非水印像素的原始索引，BFS 传播此索引
   const queue = new Int32Array(total);
-  const filled = new Uint8Array(total);
+  const sourceIdx = new Int32Array(total).fill(-1);
   let head = 0, tail = 0;
 
+  // 初始化：收集水印边缘外侧的非水印像素作为"种子源"
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
-      if (!binaryMask[idx]) continue;
-      for (let dy = -1; dy <= 1; dy++) {
+      if (binaryMask[idx]) continue; // 跳过水印区域
+      // 检查此非水印像素是否邻接水印区域
+      let isBoundary = false;
+      for (let dy = -1; dy <= 1 && !isBoundary; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           if (dx === 0 && dy === 0) continue;
           const nx = x + dx, ny = y + dy;
-          if (nx >= 0 && nx < w && ny >= 0 && ny < h && !binaryMask[ny * w + nx]) {
-            queue[tail++] = idx;
-            filled[idx] = 1;
-            dy = 2; break; // 跳出两层循环
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h && binaryMask[ny * w + nx]) {
+            isBoundary = true;
+            break;
           }
         }
+      }
+      if (isBoundary) {
+        queue[tail++] = idx;
+        sourceIdx[idx] = idx; // 自身就是颜色源
       }
     }
   }
 
-  // BFS 从边缘向内逐层填充
+  // BFS 传播：每个源向外扩散，水印像素继承最近源的颜色索引
   while (head < tail) {
     const idx = queue[head++];
     const x = idx % w, y = (idx / w) | 0;
-    const i = idx * 4;
+    const src = sourceIdx[idx];
 
-    // 取周围非水印 + 已填充像素的均值
-    let rSum = 0, gSum = 0, bSum = 0, cnt = 0;
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         if (dx === 0 && dy === 0) continue;
         const nx = x + dx, ny = y + dy;
         if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
         const nidx = ny * w + nx;
-        if (!binaryMask[nidx] || filled[nidx] > 1) {
-          const ni = nidx * 4;
-          rSum += result[ni];
-          gSum += result[ni + 1];
-          bSum += result[ni + 2];
-          cnt++;
-        }
+        if (sourceIdx[nidx] >= 0) continue; // 已访问
+        queue[tail++] = nidx;
+        sourceIdx[nidx] = src; // 继承最近源的颜色索引
       }
     }
-    if (cnt > 0) {
-      result[i] = Math.round(rSum / cnt);
-      result[i + 1] = Math.round(gSum / cnt);
-      result[i + 2] = Math.round(bSum / cnt);
-      result[i + 3] = data[i + 3];
-      filled[idx] = 2; // 标记为已填充
-    }
+  }
 
-    // 相邻未处理的水印像素入队
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const nx = x + dx, ny = y + dy;
-        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-        const nidx = ny * w + nx;
-        if (binaryMask[nidx] && !filled[nidx]) {
-          queue[tail++] = nidx;
-          filled[nidx] = 1;
-        }
+  // 用水印区域最近的非水印像素颜色填充
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      if (!binaryMask[idx]) continue;
+      const src = sourceIdx[idx];
+      if (src >= 0) {
+        const i = idx * 4, si = src * 4;
+        result[i] = data[si];
+        result[i + 1] = data[si + 1];
+        result[i + 2] = data[si + 2];
+        result[i + 3] = data[si + 3];
       }
     }
   }
