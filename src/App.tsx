@@ -103,7 +103,7 @@ export default function App() {
               { title: "本地处理", desc: "所有文件在浏览器中处理，不上传任何服务器，保护隐私安全", icon: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" },
               { title: "快速高效", desc: "基于 WebAssembly 技术，接近原生速度，大文件也能快速处理", icon: "M13 10V3L4 14h7v7l9-11h-7z" },
               { title: "完全免费", desc: "无需注册、无需付费，所有工具永远免费使用", icon: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" },
-            ].map((f, i) => (
+            ].map((f) => (
               <div key={f.title} className="flex flex-col items-center gap-3 rounded-2xl border border-[#1a1a24] bg-[#0f0f14] p-6 text-center sm:p-8">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-500">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d={f.icon} /></svg>

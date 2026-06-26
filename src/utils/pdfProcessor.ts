@@ -543,7 +543,8 @@ export async function dewaterImageAuto(files: File[]): Promise<void> {
     const mask = detectWatermark(data, w, h);
     const result = inpaintWatermark(data, mask, w, h);
 
-    const outData = new ImageData(result, w, h);
+    const outData = ctx.createImageData(w, h);
+    outData.data.set(result);
     ctx.putImageData(outData, 0, 0);
     await saveCanvasAsFile(canvas, file, "_dewatered");
   }
@@ -648,7 +649,8 @@ export async function dewaterImageManual(file: File, maskData: ImageData): Promi
     }
   }
 
-  const outData = new ImageData(result, w, h);
+  const outData = ctx.createImageData(w, h);
+  outData.data.set(result);
   ctx.putImageData(outData, 0, 0);
   await saveCanvasAsFile(canvas, file, "_dewatered");
 }

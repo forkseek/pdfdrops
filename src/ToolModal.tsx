@@ -36,7 +36,6 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
   const [batchOp, setBatchOp] = useState<"compress" | "encrypt" | "rotate90" | "rotate180" | "rotate270">("compress");
   const [batchPassword, setBatchPassword] = useState("");
   const [compareResult, setCompareResult] = useState<string | null>(null);
-  const [pageCount, setPageCount] = useState<number>(0);
   const [reorderMode, setReorderMode] = useState(false);
   const [reorderPages, setReorderPages] = useState<number[]>([]);
 
@@ -71,7 +70,6 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
       setBatchOp("compress");
       setBatchPassword("");
       setCompareResult(null);
-      setPageCount(0);
       setReorderMode(false);
       setReorderPages([]);
     }
@@ -144,21 +142,6 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
     return [...new Set(nums)].sort((a, b) => a - b);
   };
 
-  // 生成 PDF 预览
-  const generatePdfPreview = async (file: File) => {
-    const buf = await file.arrayBuffer();
-    const pdfjsLib = await import("pdfjs-dist");
-    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-    const page = await pdf.getPage(1);
-    const viewport = page.getViewport({ scale: 0.5 });
-    const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext("2d")!;
-    await page.render({ canvasContext: ctx, canvas, viewport }).promise;
-    return canvas.toDataURL("image/png");
-  };
-
   const generateBlobPreview = async (blob: Blob) => {
     return URL.createObjectURL(blob);
   };
@@ -169,7 +152,6 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
     try {
       const pdf = await import("./utils/pdfProcessor");
       const count = await pdf.getPageCount(files[0].file);
-      setPageCount(count);
       setReorderPages(Array.from({ length: count }, (_, i) => i + 1));
       setReorderMode(true);
     } catch (err: any) {
