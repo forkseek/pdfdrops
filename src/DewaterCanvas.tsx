@@ -10,10 +10,13 @@ export function DewaterCanvas({ file, onProcess }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [brushSize, setBrushSize] = useState(24);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const [tool, setTool] = useState<"brush" | "eraser">("brush");
+  const [canUndo, setCanUndo] = useState(false);
   const maskRef = useRef<ImageData | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const historyRef = useRef<ImageData[]>([]);
+  const drawingRef = useRef(false);
 
   useEffect(() => {
     const img = new Image();
@@ -21,7 +24,6 @@ export function DewaterCanvas({ file, onProcess }: Props) {
     img.src = url;
     img.onload = () => {
       imgRef.current = img;
-      // 适配容器宽度
       const containerW = containerRef.current?.clientWidth || 400;
       const maxW = Math.min(containerW - 4, 800);
       const maxH = 500;
@@ -38,6 +40,8 @@ export function DewaterCanvas({ file, onProcess }: Props) {
         const ctx = canvas.getContext("2d")!;
         ctx.drawImage(img, 0, 0, w, h);
         maskRef.current = ctx.createImageData(w, h);
+        historyRef.current = [];
+        setCanUndo(false);
       }
       setLoaded(true);
     };
@@ -45,12 +49,57 @@ export function DewaterCanvas({ file, onProcess }: Props) {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  const drawBrush = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing || !canvasRef.current) return;
+  const saveHistory = useCallback(() => {
+    if (maskRef.current) {
+      historyRef.current.push(new ImageData(
+        new Uint8ClampedArray(maskRef.current.data),
+        maskRef.current.width,
+        maskRef.current.height
+      ));
+      // 保留最近 20 步
+      if (historyRef.current.length > 20) {
+        historyRef.current.shift();
+      }
+      setCanUndo(true);
+    }
+  }, []);
+
+  const undo = useCallback(() => {
+    if (historyRef.current.length === 0) return;
+    maskRef.current = historyRef.current.pop()!;
+    setCanUndo(historyRef.current.length > 0);
+    redrawOverlay();
+  }, []);
+
+  const redrawOverlay = useCallback(() => {
     const canvas = canvasRef.current;
+    if (!canvas || !imgRef.current || !maskRef.current) return;
+    const ctx = canvas.getContext("2d")!;
+    const mask = maskRef.current;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(imgRef.current, 0, 0, canvas.width, canvas.height);
+
+    // 绘制红色半透明覆盖层
+    const overlay = ctx.createImageData(mask.width, mask.height);
+    for (let i = 0; i < mask.data.length; i += 4) {
+      if (mask.data[i] > 128) {
+        overlay.data[i] = 255;
+        overlay.data[i + 1] = 0;
+        overlay.data[i + 2] = 0;
+        overlay.data[i + 3] = 100;
+      }
+    }
+    ctx.putImageData(overlay, 0, 0);
+  }, []);
+
+  const getCanvasCoords = useCallback((e: React.MouseEvent | React.TouchEvent): { x: number; y: number } | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     let clientX: number, clientY: number;
     if ("touches" in e) {
+      if (e.touches.length === 0) return null;
       clientX = e.touches[0].clientX;
       clientY = e.touches[0].clientY;
     } else {
@@ -59,52 +108,63 @@ export function DewaterCanvas({ file, onProcess }: Props) {
     }
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    const x = Math.floor((clientX - rect.left) * scaleX);
-    const y = Math.floor((clientY - rect.top) * scaleY);
+    return {
+      x: Math.floor((clientX - rect.left) * scaleX),
+      y: Math.floor((clientY - rect.top) * scaleY),
+    };
+  }, []);
 
-    const mask = maskRef.current!;
+  const drawAt = useCallback((cx: number, cy: number) => {
+    const canvas = canvasRef.current;
+    const mask = maskRef.current;
+    if (!canvas || !mask) return;
+
     const r = brushSize;
+    const isErase = tool === "eraser";
 
-    // 绘制圆形画笔到 mask
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         if (dx * dx + dy * dy > r * r) continue;
-        const px = x + dx, py = y + dy;
+        const px = cx + dx, py = cy + dy;
         if (px < 0 || px >= mask.width || py < 0 || py >= mask.height) continue;
         const i = (py * mask.width + px) * 4;
-        mask.data[i] = 255;
-        mask.data[i + 1] = 0;
-        mask.data[i + 2] = 0;
-        mask.data[i + 3] = 255;
-      }
-    }
-
-    // 重绘：图片 + 红色半透明覆盖层
-    if (imgRef.current) {
-      const ctx = canvas.getContext("2d")!;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(imgRef.current, 0, 0, canvas.width, canvas.height);
-      // 绘制红色选区覆盖
-      const overlay = ctx.createImageData(mask.width, mask.height);
-      for (let i = 0; i < mask.data.length; i += 4) {
-        if (mask.data[i] > 128) {
-          overlay.data[i] = 255;
-          overlay.data[i + 1] = 0;
-          overlay.data[i + 2] = 0;
-          overlay.data[i + 3] = 100;
+        if (isErase) {
+          mask.data[i] = 0;
+          mask.data[i + 1] = 0;
+          mask.data[i + 2] = 0;
+          mask.data[i + 3] = 0;
+        } else {
+          mask.data[i] = 255;
+          mask.data[i + 1] = 0;
+          mask.data[i + 2] = 0;
+          mask.data[i + 3] = 255;
         }
       }
-      ctx.putImageData(overlay, 0, 0);
     }
-  }, [isDrawing, brushSize]);
+  }, [brushSize, tool]);
+
+  const drawBrush = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (!drawingRef.current) return;
+    const coords = getCanvasCoords(e);
+    if (!coords) return;
+    drawAt(coords.x, coords.y);
+    redrawOverlay();
+  }, [getCanvasCoords, drawAt, redrawOverlay]);
 
   const handleStart = (e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
-    setIsDrawing(true);
-    drawBrush(e);
+    saveHistory();
+    drawingRef.current = true;
+    const coords = getCanvasCoords(e);
+    if (coords) {
+      drawAt(coords.x, coords.y);
+      redrawOverlay();
+    }
   };
 
-  const handleEnd = () => setIsDrawing(false);
+  const handleEnd = () => {
+    drawingRef.current = false;
+  };
 
   const handleProcess = () => {
     if (maskRef.current) onProcess(maskRef.current);
@@ -112,16 +172,21 @@ export function DewaterCanvas({ file, onProcess }: Props) {
 
   const handleClear = () => {
     if (!canvasRef.current || !imgRef.current) return;
+    saveHistory();
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(imgRef.current, 0, 0, canvas.width, canvas.height);
     maskRef.current = ctx.createImageData(canvas.width, canvas.height);
+    historyRef.current = [];
+    setCanUndo(false);
   };
 
   return (
     <div className="space-y-3">
-      <p className="font-sans text-xs text-[#9090aa]">用手指或鼠标在水印区域涂抹，红色标记为选中区域</p>
+      <p className="font-sans text-xs text-[#9090aa]">
+        {tool === "brush" ? "用手指或鼠标涂抹水印区域" : "涂抹擦除已选中的区域"}
+      </p>
 
       {loaded ? (
         <>
@@ -130,7 +195,13 @@ export function DewaterCanvas({ file, onProcess }: Props) {
               ref={canvasRef}
               width={canvasSize.w}
               height={canvasSize.h}
-              style={{ width: "100%", height: "auto", touchAction: "none", display: "block" }}
+              style={{
+                width: "100%",
+                height: "auto",
+                touchAction: "none",
+                display: "block",
+                cursor: tool === "brush" ? "crosshair" : "cell",
+              }}
               onMouseDown={handleStart}
               onMouseMove={drawBrush}
               onMouseUp={handleEnd}
@@ -141,25 +212,81 @@ export function DewaterCanvas({ file, onProcess }: Props) {
             />
           </div>
 
+          {/* 工具切换 */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setTool("brush")}
+              className={`flex-1 rounded-lg py-2 font-sans text-xs transition-all flex items-center justify-center gap-1.5 ${
+                tool === "brush"
+                  ? "bg-cyan-500 text-white"
+                  : "border border-[#32324f] bg-[#1a1a24] text-[#9090aa] hover:border-[#4a4a6a]"
+              }`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" /><path d="M2 2l7.586 7.586" />
+              </svg>
+              画笔
+            </button>
+            <button
+              onClick={() => setTool("eraser")}
+              className={`flex-1 rounded-lg py-2 font-sans text-xs transition-all flex items-center justify-center gap-1.5 ${
+                tool === "eraser"
+                  ? "bg-cyan-500 text-white"
+                  : "border border-[#32324f] bg-[#1a1a24] text-[#9090aa] hover:border-[#4a4a6a]"
+              }`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14.6 1.6c.8-.8 2-.8 2.8 0L21 5.2c.8.8.8 2 0 2.8L12 17" />
+              </svg>
+              橡皮擦
+            </button>
+          </div>
+
+          {/* 画笔大小 */}
           <div className="flex items-center gap-3">
-            <span className="font-sans text-xs text-[#9090aa] shrink-0">画笔:</span>
-            <input type="range" min={8} max={60} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))}
-              className="h-1 flex-1 appearance-none rounded-full bg-[#32324f] accent-red-500" />
+            <span className="font-sans text-xs text-[#9090aa] shrink-0">
+              {tool === "brush" ? "画笔:" : "橡皮:"}
+            </span>
+            <input
+              type="range"
+              min={8}
+              max={60}
+              value={brushSize}
+              onChange={(e) => setBrushSize(Number(e.target.value))}
+              className="h-1 flex-1 appearance-none rounded-full bg-[#32324f] accent-cyan-500"
+            />
             <span className="font-mono text-xs text-[#6b6b8a] w-7 text-right">{brushSize}</span>
           </div>
 
-          <div className="flex gap-3">
-            <button onClick={handleClear} className="flex-1 rounded-xl border border-[#32324f] bg-[#1a1a24] py-2.5 font-sans text-sm text-[#e2e8f0] transition-all hover:border-[#4a4a6a] active:scale-95">
-              清除选区
+          {/* 操作按钮 */}
+          <div className="flex gap-2">
+            <button
+              onClick={undo}
+              disabled={!canUndo}
+              className="flex items-center justify-center gap-1 rounded-lg border border-[#32324f] bg-[#1a1a24] px-3 py-2.5 font-sans text-xs text-[#e2e8f0] transition-all hover:border-[#4a4a6a] active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 10h10a5 5 0 015 5v2" /><path d="M7 6l-4 4 4 4" />
+              </svg>
+              撤销
             </button>
-            <button onClick={handleProcess} className="flex-1 rounded-xl bg-red-500 py-2.5 font-sans text-sm font-medium text-white transition-all hover:bg-red-600 active:scale-95">
+            <button
+              onClick={handleClear}
+              className="flex-1 rounded-lg border border-[#32324f] bg-[#1a1a24] py-2.5 font-sans text-xs text-[#e2e8f0] transition-all hover:border-[#4a4a6a] active:scale-95"
+            >
+              清除全部
+            </button>
+            <button
+              onClick={handleProcess}
+              className="flex-1 rounded-lg bg-cyan-500 py-2.5 font-sans text-xs font-medium text-white transition-all hover:bg-cyan-600 active:scale-95 shadow-lg shadow-cyan-500/20"
+            >
               开始去水印
             </button>
           </div>
         </>
       ) : (
         <div className="flex items-center justify-center py-16">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-red-400 border-t-transparent" />
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
         </div>
       )}
     </div>

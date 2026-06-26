@@ -9,7 +9,7 @@ async function filesToBuffers(files: File[]): Promise<Uint8Array[]> {
   return Promise.all(files.map((f) => f.arrayBuffer().then((b) => new Uint8Array(b))));
 }
 
-// ── 结果收集（供 UI 展示处理后的文件预览） ──
+// ── 结果收集 ──
 const results: { blob: Blob; name: string }[] = [];
 
 export function getResults(): { blob: Blob; name: string }[] {
@@ -20,26 +20,13 @@ export function clearResults(): void {
   results.length = 0;
 }
 
-// ── 下载
 function downloadBuffer(buffer: Uint8Array, filename: string) {
   const blob = new Blob([buffer as BlobPart], { type: "application/pdf" });
   results.push({ blob, name: filename });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 function downloadBlob(blob: Blob, filename: string) {
   results.push({ blob, name: filename });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 // ══════════════════════════════════════
@@ -77,7 +64,6 @@ export async function splitPDF(file: File): Promise<void> {
     newPdf.addPage(page);
     const out = await newPdf.save();
     downloadBuffer(out, file.name.replace(/\.pdf$/i, `_page_${i + 1}.pdf`));
-    // 小延迟避免浏览器拦截
     await new Promise((r) => setTimeout(r, 200));
   }
 }
@@ -104,7 +90,6 @@ export async function compressPDF(file: File): Promise<void> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   const pdf = await PDFDocument.load(bytes);
-  // pdf-lib 保存时自动丢弃元数据实现压缩
   const out = await pdf.save({ useObjectStreams: true });
   downloadBuffer(out, file.name.replace(/\.pdf$/i, "_compressed.pdf"));
 }
@@ -116,7 +101,6 @@ export async function encryptPDF(file: File, password: string): Promise<void> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   const pdf = await PDFDocument.load(bytes);
-  // pdf-lib 1.17 类型定义缺 encrypt，但运行时存在
   // @ts-expect-error - encrypt exists at runtime but missing in types
   pdf.encrypt({ userPassword: password, ownerPassword: password });
   const out = await pdf.save();
@@ -124,7 +108,7 @@ export async function encryptPDF(file: File, password: string): Promise<void> {
 }
 
 // ══════════════════════════════════════
-// 解锁 PDF（移除密码，仅适用于未加密时提示）
+// 解锁 PDF
 // ══════════════════════════════════════
 export async function unlockPDF(file: File): Promise<void> {
   const buf = await file.arrayBuffer();
@@ -240,147 +224,6 @@ export async function pdfToImage(file: File): Promise<void> {
 }
 
 // ══════════════════════════════════════
-// PDF 转 Word（生成真正的 .docx 文件）
-// ══════════════════════════════════════
-export async function pdfToWord(file: File): Promise<void> {
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-  const pages: { paras: string[]; width: number; height: number }[] = [];
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const viewport = page.getViewport({ scale: 1 });
-    // 按 y 坐标分组（同行文字合并为一个段落）
-    const items = content.items as any[];
-    const lines: Map<number, string> = new Map();
-    for (const item of items) {
-      if (!item.str?.trim()) continue;
-      const y = Math.round(item.transform[5] / 2) * 2; // 按 y 坐标分组
-      const existing = lines.get(y) || "";
-      lines.set(y, existing + item.str);
-    }
-    const sorted = [...lines.entries()]
-      .sort((a, b) => b[0] - a[0]) // y 从大到小（从上到下）
-      .map((e) => e[1]);
-    pages.push({ paras: sorted, width: viewport.width, height: viewport.height });
-  }
-
-  const docx = buildDocx(pages);
-  downloadBlob(docx, file.name.replace(/\.pdf$/i, ".docx"));
-}
-
-// ── DOCX 生成器（纯前端，无需依赖） ──
-function buildDocx(pages: { paras: string[] }[]): Blob {
-  const docXml = buildDocumentXml(pages);
-  const files: { name: string; data: Uint8Array }[] = [
-    { name: "[Content_Types].xml", data: new TextEncoder().encode(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`) },
-    { name: "_rels/.rels", data: new TextEncoder().encode(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`) },
-    { name: "word/_rels/document.xml.rels", data: new TextEncoder().encode(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`) },
-    { name: "word/document.xml", data: new TextEncoder().encode(docXml) },
-  ];
-  return buildZip(files);
-}
-
-function buildDocumentXml(pages: { paras: string[] }[]): string {
-  const escapeXml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  let body = "";
-  for (const page of pages) {
-    for (const para of page.paras) {
-      if (!para.trim()) continue;
-      body += `<w:p><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">${escapeXml(para)}</w:t></w:r></w:p>`;
-    }
-    body += `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`;
-  }
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`;
-}
-
-// ── 最小 ZIP 生成器 ──
-function buildZip(files: { name: string; data: Uint8Array }[]): Blob {
-  const chunks: Uint8Array[] = [];
-  const cdEntries: { header: Uint8Array; offset: number }[] = [];
-  let offset = 0;
-
-  for (const file of files) {
-    const nameBytes = new TextEncoder().encode(file.name);
-    const crc = crc32(file.data);
-    const size = file.data.length;
-
-    // Local file header
-    const lh = new Uint8Array(30 + nameBytes.length);
-    const lv = new DataView(lh.buffer);
-    lv.setUint32(0, 0x04034b50, true); // signature
-    lv.setUint16(4, 20, true);          // version
-    lv.setUint16(6, 0x0800, true);      // flags (UTF-8)
-    lv.setUint16(8, 0, true);           // compression: store
-    lv.setUint16(10, 0, true);          // mod time
-    lv.setUint16(12, 0, true);          // mod date
-    lv.setUint32(14, crc, true);
-    lv.setUint32(18, size, true);
-    lv.setUint32(22, size, true);
-    lv.setUint16(26, nameBytes.length, true);
-    lv.setUint16(28, 0, true);          // extra field length
-    lh.set(nameBytes, 30);
-
-    cdEntries.push({ header: lh, offset });
-    chunks.push(lh, file.data);
-    offset += lh.length + size;
-  }
-
-  // Central directory
-  let cdSize = 0;
-  for (const entry of cdEntries) {
-    const lh = entry.header;
-    const dv = new DataView(lh.buffer);
-    dv.setUint32(0, 0x02014b50, true); // central dir signature
-    dv.setUint16(4, 20, true);          // version made by
-    dv.setUint16(6, 20, true);          // version needed
-    dv.setUint32(42, entry.offset, true);
-    chunks.push(lh);
-    cdSize += lh.length;
-  }
-
-  // End of central directory
-  const eocd = new Uint8Array(22);
-  const ev = new DataView(eocd.buffer);
-  ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, cdEntries.length, true);
-  ev.setUint16(10, cdEntries.length, true);
-  ev.setUint32(12, cdSize, true);
-  ev.setUint32(16, offset, true);
-  ev.setUint16(20, 0, true);
-  chunks.push(eocd);
-
-  // 合并
-  let total = 0;
-  for (const c of chunks) total += c.length;
-  const result = new Uint8Array(total);
-  let pos = 0;
-  for (const c of chunks) { result.set(c, pos); pos += c.length; }
-  return new Blob([result], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-}
-
-// ── CRC32 ──
-const CRC_TABLE: Uint32Array = (() => {
-  const t = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[i] = c;
-  }
-  return t;
-})();
-
-function crc32(data: Uint8Array): number {
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
-
-// ══════════════════════════════════════
 // 签名 PDF（文本签名）
 // ══════════════════════════════════════
 export async function signPDF(file: File, signatureText: string): Promise<void> {
@@ -433,7 +276,7 @@ export async function comparePDFs(file1: File, file2: File): Promise<string> {
 }
 
 // ══════════════════════════════════════
-// 页面排序（返回带序号的页面列表供用户选择）
+// 页面排序
 // ══════════════════════════════════════
 export async function getPageCount(file: File): Promise<number> {
   const buf = await file.arrayBuffer();
@@ -453,234 +296,7 @@ export async function reorderPDF(file: File, newOrder: number[]): Promise<void> 
 }
 
 // ══════════════════════════════════════
-// 去水印 —— 智能去水印（多策略检测 + 内容感知填充）
-// ══════════════════════════════════════
-export async function dewaterImageAuto(files: File[]): Promise<void> {
-  for (const file of files) {
-    const { canvas, ctx } = await loadImageToCanvas(file);
-    const w = canvas.width, h = canvas.height;
-    if (w < 10 || h < 10) { await saveCanvasAsFile(canvas, file, "_dewatered"); continue; }
-    const imageData = ctx.getImageData(0, 0, w, h);
-    const data = imageData.data;
-
-    // 步骤1: 构建灰度图用于分析
-    const gray = new Float32Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      const j = i * 4;
-      gray[i] = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
-    }
-
-    const WINDOW = 7;
-    const halfW = Math.floor(WINDOW / 2);
-
-    // 预计算局部均值和方差
-    const localMean = new Float32Array(w * h);
-    const localVar = new Float32Array(w * h);
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let sum = 0, sumSq = 0, cnt = 0;
-        for (let dy = -halfW; dy <= halfW; dy++) {
-          for (let dx = -halfW; dx <= halfW; dx++) {
-            const nx = x + dx, ny = y + dy;
-            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-              const v = gray[ny * w + nx];
-              sum += v;
-              sumSq += v * v;
-              cnt++;
-            }
-          }
-        }
-        const m = sum / cnt;
-        localMean[y * w + x] = m;
-        localVar[y * w + x] = (sumSq / cnt) - m * m;
-      }
-    }
-
-    // 步骤2: 标记水印候选像素
-    const mask = new Uint8Array(w * h);
-    const globalMean = localMean.reduce((a, b) => a + b, 0) / (w * h);
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const idx = y * w + x;
-        const i = idx * 4;
-        const a = data[i + 3];
-        const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
-        const lm = localMean[idx];
-        const lv = localVar[idx];
-
-        let isWatermark = false;
-
-        // 策略A: PNG半透明检测 (alpha 在 30~220 之间且亮度较高)
-        if (a > 30 && a < 220 && brightness > 140) {
-          isWatermark = true;
-        }
-
-        // 策略B: JPEG水印检测 - 像素比周围亮且局部方差低（水印区域通常平滑）
-        if (!isWatermark && brightness > lm + 15 && lv < 400 && brightness > 140) {
-          isWatermark = true;
-        }
-
-        // 策略C: 检测高亮低对比度区域（文字水印通常出现在这类区域）
-        if (!isWatermark && brightness > 200 && lv < 200 && brightness > lm + 10) {
-          isWatermark = true;
-        }
-
-        // 策略D: 检测均匀的浅色覆盖层（整体亮度 > 全局均值 + 阈值）
-        if (!isWatermark && brightness > globalMean + 30 && lv < 300 && brightness < 245) {
-          isWatermark = true;
-        }
-
-        if (isWatermark) {
-          mask[idx] = 1;
-        }
-      }
-    }
-
-    // 步骤3: 形态学膨胀 - 连接相邻的水印区域
-    const dilated = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (mask[y * w + x]) {
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              const nx = x + dx, ny = y + dy;
-              if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-                dilated[ny * w + nx] = 1;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // 步骤4: 内容感知填充 - 用周围非水印像素的中值填充
-    const result = new Uint8ClampedArray(data);
-    const FILL_R = 5; // 填充搜索半径
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (!dilated[y * w + x]) continue;
-        const i = (y * w + x) * 4;
-
-        // 收集周围非水印像素
-        const neighbors: [number, number, number][] = [];
-        for (let dy = -FILL_R; dy <= FILL_R; dy++) {
-          for (let dx = -FILL_R; dx <= FILL_R; dx++) {
-            if (dx === 0 && dy === 0) continue;
-            const nx = x + dx, ny = y + dy;
-            if (nx >= 0 && nx < w && ny >= 0 && ny < h && !dilated[ny * w + nx]) {
-              const ni = (ny * w + nx) * 4;
-              neighbors.push([data[ni], data[ni + 1], data[ni + 2]]);
-            }
-          }
-        }
-
-        if (neighbors.length > 0) {
-          // 按亮度排序取中值
-          neighbors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
-          const m = neighbors[Math.floor(neighbors.length / 2)];
-          result[i] = m[0];
-          result[i + 1] = m[1];
-          result[i + 2] = m[2];
-          result[i + 3] = 255;
-        } else {
-          // 扩大搜索范围
-          for (let dy = -FILL_R * 2; dy <= FILL_R * 2; dy++) {
-            for (let dx = -FILL_R * 2; dx <= FILL_R * 2; dx++) {
-              const nx = x + dx, ny = y + dy;
-              if (nx >= 0 && nx < w && ny >= 0 && ny < h && !dilated[ny * w + nx]) {
-                const ni = (ny * w + nx) * 4;
-                neighbors.push([data[ni], data[ni + 1], data[ni + 2]]);
-              }
-            }
-          }
-          if (neighbors.length > 0) {
-            neighbors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
-            const m = neighbors[Math.floor(neighbors.length / 2)];
-            result[i] = m[0];
-            result[i + 1] = m[1];
-            result[i + 2] = m[2];
-            result[i + 3] = 255;
-          }
-        }
-      }
-    }
-
-    const outData = new ImageData(result, w, h);
-    ctx.putImageData(outData, 0, 0);
-    await saveCanvasAsFile(canvas, file, "_dewatered");
-    await new Promise((r) => setTimeout(r, 200));
-  }
-}
-
-// ══════════════════════════════════════
-// 去水印 —— 画笔选区去水印（根据 mask 数据移除指定区域）
-// ══════════════════════════════════════
-export async function dewaterImageManual(file: File, maskData: ImageData): Promise<void> {
-  const { canvas, ctx } = await loadImageToCanvas(file);
-  const w = canvas.width, h = canvas.height;
-  const imageData = ctx.getImageData(0, 0, w, h);
-  const data = imageData.data;
-  const mask = maskData.data;
-
-  // 只处理 mask 标记的区域（红色通道 > 128 表示选中）
-  for (let y = 0; y < Math.min(h, maskData.height); y++) {
-    for (let x = 0; x < Math.min(w, maskData.width); x++) {
-      const mi = (y * maskData.width + x) * 4;
-      if (mask[mi] > 128) {
-        const i = (y * w + x) * 4;
-        // 用周围像素填充
-        const sx = Math.max(0, x - 2), sy = Math.max(0, y - 2);
-        const si = (sy * w + sx) * 4;
-        data[i] = data[si];
-        data[i + 1] = data[si + 1];
-        data[i + 2] = data[si + 2];
-        data[i + 3] = 255;
-      }
-    }
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-  await saveCanvasAsFile(canvas, file, "_dewatered");
-}
-
-// 辅助：加载图片到 canvas
-async function loadImageToCanvas(file: File): Promise<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }> {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const img = new Image();
-  img.src = URL.createObjectURL(new Blob([bytes]));
-  await new Promise<void>((res) => { img.onload = () => res(); });
-  const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(img, 0, 0);
-  URL.revokeObjectURL(img.src);
-  return { canvas, ctx };
-}
-
-// 辅助：保存 canvas 为文件
-async function saveCanvasAsFile(canvas: HTMLCanvasElement, file: File, suffix: string): Promise<void> {
-  const base = file.name.replace(/\.[^.]+$/, "");
-  const ext = file.type === "image/png" ? "png" : "jpg";
-  const mime = file.type || "image/png";
-  canvas.toBlob((blob) => {
-    if (blob) downloadBlob(blob, `${base}${suffix}.${ext}`);
-  }, mime);
-}
-
-// ══════════════════════════════════════
-// 去水印（兼容旧接口 —— 智能去水印）
-// ══════════════════════════════════════
-export async function dewaterImage(files: File[]): Promise<void> {
-  return dewaterImageAuto(files);
-}
-
-// ══════════════════════════════════════
-// 批量处理（统一操作多个文件）
+// 批量处理
 // ══════════════════════════════════════
 export type BatchOperation = "compress" | "encrypt" | "rotate90" | "rotate180" | "rotate270";
 
@@ -709,4 +325,334 @@ export async function batchProcess(
     }
     await new Promise((r) => setTimeout(r, 300));
   }
+}
+
+// ══════════════════════════════════════
+// 去水印 —— 辅助函数
+// ══════════════════════════════════════
+
+async function loadImageToCanvas(file: File): Promise<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const img = new Image();
+  img.src = URL.createObjectURL(new Blob([bytes]));
+  await new Promise<void>((res) => { img.onload = () => res(); });
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  URL.revokeObjectURL(img.src);
+  return { canvas, ctx };
+}
+
+async function saveCanvasAsFile(canvas: HTMLCanvasElement, file: File, suffix: string): Promise<void> {
+  const base = file.name.replace(/\.[^.]+$/, "");
+  const ext = file.type === "image/png" ? "png" : "jpg";
+  const mime = file.type || "image/png";
+  canvas.toBlob((blob) => {
+    if (blob) downloadBlob(blob, `${base}${suffix}.${ext}`);
+  }, mime, 0.95);
+}
+
+/** 检测水印区域，返回 mask */
+function detectWatermark(data: Uint8ClampedArray, w: number, h: number): Uint8Array {
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const j = i * 4;
+    gray[i] = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+  }
+
+  let globalSum = 0;
+  for (let i = 0; i < w * h; i++) globalSum += gray[i];
+  const globalMean = globalSum / (w * h);
+
+  const WINDOW = 7;
+  const halfW = Math.floor(WINDOW / 2);
+  const localMean = new Float32Array(w * h);
+  const localVar = new Float32Array(w * h);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0, sumSq = 0, cnt = 0;
+      for (let dy = -halfW; dy <= halfW; dy++) {
+        for (let dx = -halfW; dx <= halfW; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            const v = gray[ny * w + nx];
+            sum += v;
+            sumSq += v * v;
+            cnt++;
+          }
+        }
+      }
+      const m = sum / cnt;
+      localMean[y * w + x] = m;
+      localVar[y * w + x] = (sumSq / cnt) - m * m;
+    }
+  }
+
+  const mask = new Uint8Array(w * h);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const i = idx * 4;
+      const a = data[i + 3];
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const brightness = (r + g + b) / 3;
+      const lm = localMean[idx];
+      const lv = localVar[idx];
+
+      let isWatermark = false;
+
+      if (a > 30 && a < 220 && brightness > 130) {
+        isWatermark = true;
+      }
+      if (!isWatermark && brightness > lm + 12 && lv < 350 && brightness > 135 && brightness < 248) {
+        isWatermark = true;
+      }
+      if (!isWatermark && brightness > 195 && lv < 180 && brightness > lm + 8) {
+        isWatermark = true;
+      }
+      if (!isWatermark && brightness > globalMean + 28 && lv < 280 && brightness < 242) {
+        isWatermark = true;
+      }
+      const colorRange = Math.max(r, g, b) - Math.min(r, g, b);
+      if (!isWatermark && brightness > 160 && colorRange < 25 && lv < 250 && brightness > lm + 5) {
+        isWatermark = true;
+      }
+
+      if (isWatermark) {
+        mask[idx] = 1;
+      }
+    }
+  }
+
+  const dilated = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x]) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+              dilated[ny * w + nx] = 1;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return dilated;
+}
+
+function inpaintWatermark(
+  data: Uint8ClampedArray,
+  mask: Uint8Array,
+  w: number,
+  h: number
+): Uint8ClampedArray {
+  const result = new Uint8ClampedArray(data);
+  const FILL_R = 6;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      const i = (y * w + x) * 4;
+
+      interface Neighbor { r: number; g: number; b: number; weight: number }
+      const neighbors: Neighbor[] = [];
+
+      for (let dy = -FILL_R; dy <= FILL_R; dy++) {
+        for (let dx = -FILL_R; dx <= FILL_R; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h && !mask[ny * w + nx]) {
+            const ni = (ny * w + nx) * 4;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            neighbors.push({
+              r: data[ni],
+              g: data[ni + 1],
+              b: data[ni + 2],
+              weight: 1 / (dist + 0.5),
+            });
+          }
+        }
+      }
+
+      if (neighbors.length === 0) {
+        const BIG_R = FILL_R * 2;
+        for (let dy = -BIG_R; dy <= BIG_R; dy++) {
+          for (let dx = -BIG_R; dx <= BIG_R; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h && !mask[ny * w + nx]) {
+              const ni = (ny * w + nx) * 4;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              neighbors.push({
+                r: data[ni],
+                g: data[ni + 1],
+                b: data[ni + 2],
+                weight: 1 / (dist + 1),
+              });
+            }
+          }
+        }
+      }
+
+      if (neighbors.length > 0) {
+        neighbors.sort((a, b) => (a.r + a.g + a.b) - (b.r + b.g + b.b));
+        const totalWeight = neighbors.reduce((s, n) => s + n.weight, 0);
+        let cumWeight = 0;
+        let medianIdx = 0;
+        for (let k = 0; k < neighbors.length; k++) {
+          cumWeight += neighbors[k].weight;
+          if (cumWeight >= totalWeight / 2) {
+            medianIdx = k;
+            break;
+          }
+        }
+        const m = neighbors[medianIdx];
+        result[i] = m.r;
+        result[i + 1] = m.g;
+        result[i + 2] = m.b;
+        result[i + 3] = 255;
+      }
+    }
+  }
+
+  return result;
+}
+
+// ══════════════════════════════════════
+// 去水印 —— 智能去水印
+// ══════════════════════════════════════
+export async function dewaterImageAuto(files: File[]): Promise<void> {
+  for (const file of files) {
+    const { canvas, ctx } = await loadImageToCanvas(file);
+    const w = canvas.width, h = canvas.height;
+    if (w < 10 || h < 10) {
+      await saveCanvasAsFile(canvas, file, "_dewatered");
+      continue;
+    }
+
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+
+    const mask = detectWatermark(data, w, h);
+    const result = inpaintWatermark(data, mask, w, h);
+
+    const outData = new ImageData(result, w, h);
+    ctx.putImageData(outData, 0, 0);
+    await saveCanvasAsFile(canvas, file, "_dewatered");
+  }
+}
+
+export async function previewDewaterDetection(file: File): Promise<{ preview: string }> {
+  const { canvas, ctx } = await loadImageToCanvas(file);
+  const w = canvas.width, h = canvas.height;
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+
+  const mask = detectWatermark(data, w, h);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x]) {
+        const i = (y * w + x) * 4;
+        data[i] = Math.min(255, data[i] * 0.3 + 200);
+        data[i + 1] = Math.min(255, data[i + 1] * 0.3);
+        data[i + 2] = Math.min(255, data[i + 2] * 0.3);
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return { preview: canvas.toDataURL("image/jpeg", 0.85) };
+}
+
+// ══════════════════════════════════════
+// 去水印 —— 画笔选区去水印
+// ══════════════════════════════════════
+export async function dewaterImageManual(file: File, maskData: ImageData): Promise<void> {
+  const { canvas, ctx } = await loadImageToCanvas(file);
+  const w = canvas.width, h = canvas.height;
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+  const mask = maskData.data;
+
+  const scaleX = maskData.width / w;
+  const scaleY = maskData.height / h;
+  const binaryMask = new Uint8Array(w * h);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const mx = Math.floor(x * scaleX);
+      const my = Math.floor(y * scaleY);
+      if (mx >= 0 && mx < maskData.width && my >= 0 && my < maskData.height) {
+        const mi = (my * maskData.width + mx) * 4;
+        if (mask[mi] > 128) {
+          binaryMask[y * w + x] = 1;
+        }
+      }
+    }
+  }
+
+  const FILL_R = 5;
+  const result = new Uint8ClampedArray(data);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!binaryMask[y * w + x]) continue;
+      const i = (y * w + x) * 4;
+
+      interface Neighbor { r: number; g: number; b: number; weight: number }
+      const neighbors: Neighbor[] = [];
+
+      for (let dy = -FILL_R; dy <= FILL_R; dy++) {
+        for (let dx = -FILL_R; dx <= FILL_R; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h && !binaryMask[ny * w + nx]) {
+            const ni = (ny * w + nx) * 4;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            neighbors.push({
+              r: data[ni],
+              g: data[ni + 1],
+              b: data[ni + 2],
+              weight: 1 / (dist + 0.5),
+            });
+          }
+        }
+      }
+
+      if (neighbors.length > 0) {
+        neighbors.sort((a, b) => (a.r + a.g + a.b) - (b.r + b.g + b.b));
+        const totalWeight = neighbors.reduce((s, n) => s + n.weight, 0);
+        let cumWeight = 0;
+        let medianIdx = 0;
+        for (let k = 0; k < neighbors.length; k++) {
+          cumWeight += neighbors[k].weight;
+          if (cumWeight >= totalWeight / 2) {
+            medianIdx = k;
+            break;
+          }
+        }
+        const m = neighbors[medianIdx];
+        result[i] = m.r;
+        result[i + 1] = m.g;
+        result[i + 2] = m.b;
+        result[i + 3] = 255;
+      }
+    }
+  }
+
+  const outData = new ImageData(result, w, h);
+  ctx.putImageData(outData, 0, 0);
+  await saveCanvasAsFile(canvas, file, "_dewatered");
+}
+
+export async function dewaterImage(files: File[]): Promise<void> {
+  return dewaterImageAuto(files);
 }
