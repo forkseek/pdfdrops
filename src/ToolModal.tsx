@@ -26,6 +26,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
   const [processedResults, setProcessedResults] = useState<ProcessedResult[]>([]);
   const [previewDewater, setPreviewDewater] = useState<string | null>(null);
   const [originalPreview, setOriginalPreview] = useState<string | null>(null);
+  const [brushEntered, setBrushEntered] = useState(false);
 
   // 各工具参数
   const [password, setPassword] = useState("");
@@ -101,6 +102,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
     setOriginalPreview(null);
     setCompareResult(null);
     setStatus("idle");
+    setBrushEntered(false);
     if (acceptConfig.multiple) {
       setFiles((prev) => prev.some((f) => f.name === file.name && f.size === file.size) ? prev : [...prev, entry]);
     } else {
@@ -122,6 +124,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
     setProcessedResults([]);
     setCompareResult(null);
     setStatus("idle");
+    setBrushEntered(false);
   };
 
   // 解析页码范围："1,3,5-7" → [1,3,5,6,7]
@@ -340,7 +343,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
   if (!tool) return null;
 
   const isManualMode = dewaterMode === "manual";
-  const showBrushCanvas = isDewater && isManualMode && files.length > 0 && status !== "processing" && processedResults.length === 0;
+  const showBrushCanvas = isDewater && isManualMode && files.length > 0 && brushEntered && status !== "processing" && processedResults.length === 0;
   const hasFiles = files.length > 0;
   const showAutoPreview = isDewater && dewaterMode === "auto" && hasFiles && !showBrushCanvas && processedResults.length === 0 && !previewDewater;
 
@@ -366,7 +369,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
       {isDewater && (
         <div className="mt-5 flex gap-2">
           <button
-            onClick={() => { setDewaterMode("auto"); setPreviewDewater(null); setOriginalPreview(null); setProcessedResults([]); }}
+            onClick={() => { setDewaterMode("auto"); setPreviewDewater(null); setOriginalPreview(null); setProcessedResults([]); setBrushEntered(false); }}
             className={`flex-1 rounded-lg py-2.5 font-sans text-sm transition-all duration-300 ${
               dewaterMode === "auto" ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" : "border border-[#32324f] bg-[#1a1a24] text-[#9090aa] hover:border-[#4a4a6a]"
             }`}
@@ -374,7 +377,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
             智能去水印
           </button>
           <button
-            onClick={() => { setDewaterMode("manual"); setPreviewDewater(null); setOriginalPreview(null); setProcessedResults([]); }}
+            onClick={() => { setDewaterMode("manual"); setPreviewDewater(null); setOriginalPreview(null); setProcessedResults([]); setBrushEntered(false); }}
             className={`flex-1 rounded-lg py-2.5 font-sans text-sm transition-all duration-300 ${
               dewaterMode === "manual" ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" : "border border-[#32324f] bg-[#1a1a24] text-[#9090aa] hover:border-[#4a4a6a]"
             }`}
@@ -497,7 +500,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
         <div className="mt-4 animate-slide-down space-y-2">
           <div className="flex items-center justify-between">
             <p className="font-sans text-xs font-medium text-[#9090aa]">画笔编辑</p>
-            <button onClick={() => { removeFile(0); setDewaterMode("auto"); }} className="flex items-center gap-1 rounded-lg px-2 py-1 font-sans text-xs text-[#6b6b8a] transition-colors hover:bg-[#24243a] hover:text-red-400">
+            <button onClick={() => { removeFile(0); setBrushEntered(false); }} className="flex items-center gap-1 rounded-lg px-2 py-1 font-sans text-xs text-[#6b6b8a] transition-colors hover:bg-[#24243a] hover:text-red-400">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
               重新选择
             </button>
@@ -522,7 +525,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
         <div className="mt-4 animate-slide-down space-y-3">
           <div className="flex items-center justify-between">
             <p className="font-sans text-xs font-medium text-[#9090aa]">图片预览</p>
-            <button onClick={() => removeFile(0)} className="flex items-center gap-1 rounded-lg px-2 py-1 font-sans text-xs text-[#6b6b8a] transition-colors hover:bg-[#24243a] hover:text-red-400">
+            <button onClick={() => { removeFile(0); setBrushEntered(false); }} className="flex items-center gap-1 rounded-lg px-2 py-1 font-sans text-xs text-[#6b6b8a] transition-colors hover:bg-[#24243a] hover:text-red-400">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
               重新选择
             </button>
@@ -535,7 +538,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
             <span className="flex-1 truncate font-sans text-xs text-[#9090aa]">{files[0].name}</span>
             <span className="font-mono text-xs text-[#6b6b8a]">{formatFileSize(files[0].size)}</span>
           </div>
-          <button onClick={() => setDewaterMode("manual")} className="w-full rounded-xl bg-cyan-500 py-3 font-sans text-sm font-medium text-white transition-all hover:bg-cyan-600 active:scale-95 shadow-lg shadow-cyan-500/20 animate-pulse-glow">
+          <button onClick={() => setBrushEntered(true)} className="w-full rounded-xl bg-cyan-500 py-3 font-sans text-sm font-medium text-white transition-all hover:bg-cyan-600 active:scale-95 shadow-lg shadow-cyan-500/20 animate-pulse-glow">
             进入画笔编辑
           </button>
         </div>
@@ -718,6 +721,7 @@ export function ToolModal({ tool, onClose, inline }: { tool: Tool | null; onClos
               setStatus("idle");
               setReorderMode(false);
               setReorderPages([]);
+              setBrushEntered(false);
             }}
             className="w-full rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 font-sans text-sm text-[#e2e8f0] transition-all hover:border-[#4a4a6a] active:scale-95"
           >
