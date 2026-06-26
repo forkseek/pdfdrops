@@ -349,11 +349,11 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
         {/* 文件选择器 */}
         <div className="mt-6 space-y-3">
           <label
-            onClick={(e) => { e.preventDefault(); fileInputRef.current?.click(); }}
+            htmlFor="file-upload"
             className="relative flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-[#32324f] bg-[#1a1a24] p-6 text-center transition-all active:border-[#4a4a6a] active:scale-[0.98]"
           >
-            <input ref={fileInputRef} type="file" accept={acceptConfig.accept} multiple={acceptConfig.multiple} onChange={onFileChange}
-              className="hidden" />
+            <input id="file-upload" ref={fileInputRef} type="file" accept={acceptConfig.accept} multiple={acceptConfig.multiple} onChange={onFileChange}
+              className="absolute inset-0 opacity-0 cursor-pointer" />
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6b6b8a" strokeWidth="1.5" className="mb-3">
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
             </svg>
@@ -364,22 +364,22 @@ export function ToolModal({ tool, onClose }: { tool: Tool | null; onClose: () =>
           {isImageTool && (
             <div className="flex gap-2">
               <label
-                onClick={(e) => { e.preventDefault(); galleryInputRef.current?.click(); }}
+                htmlFor="gallery-upload"
                 className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95"
               >
-                <input ref={galleryInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} onChange={onFileChange}
-                  className="hidden" />
+                <input id="gallery-upload" ref={galleryInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} onChange={onFileChange}
+                  className="absolute inset-0 opacity-0 cursor-pointer" />
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
                   <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" />
                 </svg>
                 <span className="font-sans text-sm text-[#e2e8f0]">相册</span>
               </label>
               <label
-                onClick={(e) => { e.preventDefault(); cameraInputRef.current?.click(); }}
+                htmlFor="camera-upload"
                 className="relative flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#32324f] bg-[#1a1a24] py-3 text-center transition-all active:border-[#4a4a6a] active:scale-95"
               >
-                <input ref={cameraInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} capture="environment" onChange={onFileChange}
-                  className="hidden" />
+                <input id="camera-upload" ref={cameraInputRef} type="file" accept="image/*" multiple={acceptConfig.multiple} capture="environment" onChange={onFileChange}
+                  className="absolute inset-0 opacity-0 cursor-pointer" />
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[#9090aa]">
                   <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" />
                 </svg>
