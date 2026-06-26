@@ -603,51 +603,74 @@ export async function dewaterImageManual(file: File, maskData: ImageData): Promi
     }
   }
 
-  const FILL_R = 5;
   const result = new Uint8ClampedArray(data);
+  const total = w * h;
+
+  // 边缘像素队列：水印像素 && 至少有一个非水印邻居
+  const queue = new Int32Array(total);
+  const filled = new Uint8Array(total);
+  let head = 0, tail = 0;
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (!binaryMask[y * w + x]) continue;
-      const i = (y * w + x) * 4;
-
-      interface Neighbor { r: number; g: number; b: number; weight: number }
-      const neighbors: Neighbor[] = [];
-
-      for (let dy = -FILL_R; dy <= FILL_R; dy++) {
-        for (let dx = -FILL_R; dx <= FILL_R; dx++) {
+      const idx = y * w + x;
+      if (!binaryMask[idx]) continue;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
           if (dx === 0 && dy === 0) continue;
           const nx = x + dx, ny = y + dy;
           if (nx >= 0 && nx < w && ny >= 0 && ny < h && !binaryMask[ny * w + nx]) {
-            const ni = (ny * w + nx) * 4;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            neighbors.push({
-              r: data[ni],
-              g: data[ni + 1],
-              b: data[ni + 2],
-              weight: 1 / (dist + 0.5),
-            });
+            queue[tail++] = idx;
+            filled[idx] = 1;
+            dy = 2; break; // 跳出两层循环
           }
         }
       }
+    }
+  }
 
-      if (neighbors.length > 0) {
-        neighbors.sort((a, b) => (a.r + a.g + a.b) - (b.r + b.g + b.b));
-        const totalWeight = neighbors.reduce((s, n) => s + n.weight, 0);
-        let cumWeight = 0;
-        let medianIdx = 0;
-        for (let k = 0; k < neighbors.length; k++) {
-          cumWeight += neighbors[k].weight;
-          if (cumWeight >= totalWeight / 2) {
-            medianIdx = k;
-            break;
-          }
+  // BFS 从边缘向内逐层填充
+  while (head < tail) {
+    const idx = queue[head++];
+    const x = idx % w, y = (idx / w) | 0;
+    const i = idx * 4;
+
+    // 取周围非水印 + 已填充像素的均值
+    let rSum = 0, gSum = 0, bSum = 0, cnt = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        const nidx = ny * w + nx;
+        if (!binaryMask[nidx] || filled[nidx] > 1) {
+          const ni = nidx * 4;
+          rSum += result[ni];
+          gSum += result[ni + 1];
+          bSum += result[ni + 2];
+          cnt++;
         }
-        const m = neighbors[medianIdx];
-        result[i] = m.r;
-        result[i + 1] = m.g;
-        result[i + 2] = m.b;
-        result[i + 3] = 255;
+      }
+    }
+    if (cnt > 0) {
+      result[i] = Math.round(rSum / cnt);
+      result[i + 1] = Math.round(gSum / cnt);
+      result[i + 2] = Math.round(bSum / cnt);
+      result[i + 3] = data[i + 3];
+      filled[idx] = 2; // 标记为已填充
+    }
+
+    // 相邻未处理的水印像素入队
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        const nidx = ny * w + nx;
+        if (binaryMask[nidx] && !filled[nidx]) {
+          queue[tail++] = nidx;
+          filled[nidx] = 1;
+        }
       }
     }
   }
